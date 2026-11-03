@@ -27,7 +27,6 @@ using DataFrames
 using Agents
 using Statistics
 using Tethys
-const Tethys = Tethys
 using Interpolations
 
 
@@ -296,7 +295,7 @@ Estimate seabed depths over a geographic area centred at `(lon, lat)` spanning
 At latitude `lat`, 1 degree of latitude corresponds to ~111,139 m, and 1 degree of
 longitude corresponds to ~111,139 * cos(lat * π / 180) m.
 
-Searches local store candidates via `Tethys.geoload` and continuous interpolation
+Searches local store candidates via `Tethys.load_dataset` and continuous interpolation
 via `Tethys.get_bathymetry_interpolator`. If offline or missing, defaults to the
 regional shelf analytical bathymetry evaluated over the sampled grid offsets.
 
@@ -345,8 +344,8 @@ function estimate_aoi_bathymetry(
         try
             candidate_file = candidate_paths[c_idx]
             ds_bathy = occursin(".nc", candidate_file) ?
-                Tethys.geoload(candidate_file; backend = :ncdatasets) :
-                Tethys.geoload(candidate_file)
+                Tethys.load_dataset(candidate_file; backend = :ncdatasets) :
+                Tethys.load_dataset(candidate_file)
             bathy_itp = Tethys.get_bathymetry_interpolator(ds_bathy)
             for j in 1:n_points, i in 1:n_points
                 val = bathy_itp(lon_pts[i], lat_pts[j])

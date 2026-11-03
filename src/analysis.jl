@@ -798,123 +798,133 @@ function summarize_stock_recruitment(sr_df::DataFrame; fits = nothing)
 end
 
 # ==============================================================================
-# Simulation Results File Persistence & Annual Production Extraction
+# Tethys Lakehouse Persistence & Annual Production Extraction
 # ==============================================================================
 
 """
-    write_dataframe_csv(filepath::String, df::DataFrame)
+    resolve_simulation_results_path(path::AbstractString) -> String
 
-Write a `DataFrame` to `filepath` in standard comma-separated values (CSV) format
-without external dependencies.
+Resolve a results collection path. Relative paths live beneath
+`Tethys.lakehouse_dir("TethysBio")`; absolute paths are explicit overrides.
+Relative paths that traverse outside the TethysBio namespace are rejected.
 """
-function write_dataframe_csv(filepath::String, df::DataFrame)
-    open(filepath, "w") do io
-        col_names = names(df)
-        println(io, join(col_names, ","))
-        for row in eachrow(df)
-            vals = [string(row[c]) for c in col_names]
-            println(io, join(vals, ","))
-        end
+function resolve_simulation_results_path(path::AbstractString)::String
+    value = strip(String(path))
+    isempty(value) && throw(ArgumentError("simulation results path cannot be empty"))
+    isabspath(value) && return normpath(value)
+
+    namespace = normpath(Tethys.lakehouse_dir("TethysBio"))
+    resolved = normpath(joinpath(namespace, value))
+    relative = relpath(resolved, namespace)
+    components = split(replace(relative, '\\' => '/'), '/')
+    if relative == "." || relative == ".." || first(components) == ".."
+        throw(ArgumentError("relative simulation results path must remain inside $(namespace): $(path)"))
     end
-    return filepath
+    return resolved
+end
+
+function _simulation_results_metadata(
+    dt_year::Real,
+    frequency_days::Real,
+    snapshot_day::Union{Nothing, Real},
+    meta::AbstractDict
+)
+    keys_out = String["dt_year", "frequency_days", "snapshot_day"]
+    values_out = String[string(dt_year), string(frequency_days), string(snapshot_day)]
+    for key in sort!(collect(keys(meta)); by = string)
+        push!(keys_out, string(key))
+        push!(values_out, repr(meta[key]))
+    end
+    return DataFrame(key = keys_out, value = values_out)
+end
+
+function _write_annual_production_collection(
+    path::AbstractString,
+    ann_df::DataFrame;
+    dt_year::Real,
+    frequency_days::Real,
+    snapshot_day::Union{Nothing, Real},
+    meta::AbstractDict
+)
+    collection = resolve_simulation_results_path(path)
+    storage = Tethys.open_geostorage(
+        joinpath(collection, "_collection.parquet");
+        backend = :geoparquet,
+        create = true
+    )
+    try
+        Tethys.write_storage_variable!(storage, "annual_production", ann_df)
+        Tethys.write_storage_variable!(
+            storage,
+            "run_metadata",
+            _simulation_results_metadata(dt_year, frequency_days, snapshot_day, meta)
+        )
+    finally
+        Tethys.close_geostorage(storage)
+    end
+    return collection
 end
 
 """
-    read_dataframe_csv(filepath::String)
+    save_simulation_results(path, agent_df, model_df; dt_year=365.0,
+                            frequency_days=dt_year, snapshot_day=274.0, meta=Dict())
 
-Read a numeric CSV file into a `DataFrame` without external dependencies.
-"""
-function read_dataframe_csv(filepath::String)
-    lines = readlines(filepath)
-    filter!(!isempty, lines)
-    if isempty(lines)
-        return DataFrame()
-    end
-    header = [String(strip(h)) for h in split(lines[1], ',')]
-    data = Dict{String, Vector{Any}}()
-    for h in header
-        data[h] = Any[]
-    end
-    for line in lines[2:end]
-        parts = split(line, ',')
-        for (i, h) in enumerate(header)
-            raw = (i <= length(parts)) ? strip(parts[i]) : ""
-            val = tryparse(Int, raw)
-            if val === nothing
-                val = tryparse(Float64, raw)
-            end
-            push!(data[h], val === nothing ? 0.0 : val)
-        end
-    end
-    df = DataFrame()
-    for h in header
-        col = data[h]
-        if all(x -> x isa Int, col)
-            df[!, Symbol(h)] = Int.(col)
-        else
-            df[!, Symbol(h)] = Float64.(col)
-        end
-    end
-    return df
-end
-
-"""
-    save_simulation_results(filepath::String, agent_df::DataFrame, model_df::DataFrame;
-                            dt_year::Float64 = 365.0,
-                            frequency_days::Float64 = dt_year,
-                            snapshot_day::Union{Nothing, Float64} = 274.0,
-                            meta::Dict = Dict{Symbol, Any}())
-
-Save annual simulation output tables to disk in CSV format for post-hoc macro-ecological
-analyses, sampling the population at user-specified output frequency in days (`frequency_days`,
-default: 365.0 days = 1 year) and day-of-year snapshot (`snapshot_day`, default: 274.0 = ~1 Sep).
-
-# Arguments
-- `filepath::String`: Target file path (typically ending in `.csv`).
-- `agent_df::DataFrame`: Agent time-series table.
-- `model_df::DataFrame`: Model-level time-series table.
-- `dt_year::Float64`: Days per calendar year (default: 365.0).
-- `frequency_days::Float64`: Sampling interval in days (default: 365.0 = 1 year).
-- `snapshot_day::Union{Nothing, Float64}`: Day of calendar year (1-365) to sample annual survey
-  snapshots (default: 274.0, corresponding to ~1 September).
-- `meta::Dict`: Optional metadata dictionary.
+Extract annual production indicators and save them as compressed Parquet tables in a
+Tethys lakehouse collection. Relative `path` values resolve below the TethysBio
+lakehouse namespace; absolute paths explicitly override that location. The
+collection contains `annual_production.parquet` and `run_metadata.parquet`.
 
 # Returns
-`String` path of saved file.
+The absolute path to the collection directory.
 """
 function save_simulation_results(
-    filepath::String,
+    path::AbstractString,
     agent_df::DataFrame,
     model_df::DataFrame;
-    dt_year::Float64 = 365.0,
-    frequency_days::Float64 = dt_year,
-    snapshot_day::Union{Nothing, Float64} = 274.0,
-    meta::Dict = Dict{Symbol, Any}()
+    dt_year::Real = 365.0,
+    frequency_days::Real = dt_year,
+    snapshot_day::Union{Nothing, Real} = 274.0,
+    meta::AbstractDict = Dict{Symbol, Any}()
 )
     ann_df = extract_annual_production(
         agent_df,
         model_df;
+        dt_year = Float64(dt_year),
+        frequency_days = Float64(frequency_days),
+        snapshot_day = isnothing(snapshot_day) ? nothing : Float64(snapshot_day)
+    )
+    return _write_annual_production_collection(
+        path,
+        ann_df;
         dt_year = dt_year,
         frequency_days = frequency_days,
-        snapshot_day = snapshot_day
+        snapshot_day = snapshot_day,
+        meta = meta
     )
-    write_dataframe_csv(filepath, ann_df)
-    return filepath
 end
 
 """
-    load_simulation_results(filepath::String)
+    load_simulation_results(path) -> DataFrame
 
-Load previously saved simulation results from `filepath` in CSV format.
-
-# Returns
-`DataFrame` containing annual production timeseries.
+Load the `annual_production` Parquet table from a TethysBio lakehouse
+collection. Relative paths resolve beneath `Tethys.lakehouse_dir("TethysBio")`;
+absolute paths are explicit overrides.
 """
-function load_simulation_results(filepath::String)
-    if !isfile(filepath)
-        error("Simulation results file not found: $(filepath)")
+function load_simulation_results(path::AbstractString)
+    collection = resolve_simulation_results_path(path)
+    table_path = joinpath(collection, "annual_production.parquet")
+    isfile(table_path) || error("Annual production Parquet table not found: $(table_path)")
+    storage = Tethys.open_geostorage(
+        joinpath(collection, "_collection.parquet");
+        backend = :geoparquet,
+        read_only = true,
+        create = false
+    )
+    try
+        return Tethys.read_storage_variable(storage, "annual_production")
+    finally
+        Tethys.close_geostorage(storage)
     end
-    return read_dataframe_csv(filepath)
 end
 
 """
@@ -1966,7 +1976,7 @@ to simulation results for:
 2. The **fishable component** (legal-sized adult males).
 
 # Arguments
-- `source`: File path (`.csv` or `.jls`), `Tuple{DataFrame, DataFrame}`,
+- `source`: Lakehouse collection path, `Tuple{DataFrame, DataFrame}`,
   or `DataFrame` containing annual production metrics.
 - `lag::Int`: Recruitment delay in years (default: 1).
 
@@ -1974,15 +1984,8 @@ to simulation results for:
 NamedTuple containing `annual_df`, `whole_population`, `fishable_stock`, and `lag`.
 """
 function fit_population_dynamics(source; lag::Int = 1)
-    ann_df = if source isa String
-        res = load_simulation_results(source)
-        if res isa DataFrame
-            res
-        elseif res isa Dict && haskey(res, :agent_df) && haskey(res, :model_df)
-            extract_annual_production(res[:agent_df], res[:model_df])
-        else
-            error("Unrecognized data format in results file: $(source)")
-        end
+    ann_df = if source isa AbstractString
+        load_simulation_results(source)
     elseif source isa Tuple && length(source) == 2 &&
            source[1] isa DataFrame && source[2] isa DataFrame
         extract_annual_production(source[1], source[2])
@@ -2173,7 +2176,7 @@ refitting macro-ecological population dynamics models to each truncated time ser
 computing Mohn's rho to quantify retrospective bias for both Whole Population and Fishable Stock.
 
 # Arguments
-- `source`: Simulation results file path (`.csv`), `DataFrame`, or `Tuple{DataFrame, DataFrame}`.
+- `source`: Lakehouse collection path, `DataFrame`, or `Tuple{DataFrame, DataFrame}`.
 - `n_peels::Int`: Desired number of annual peels (default: 5, clamped to available data).
 - `model_type::Symbol`: Model structure to evaluate (`:schaefer` [default], `:delay_difference`, or `:both`).
 - `lag::Int`: Recruitment lag for delay-difference model in years (default: 1).
@@ -2198,9 +2201,8 @@ function retrospective_analysis(
         model_type = :schaefer
     end
 
-    ann_df = if source isa String
-        res = load_simulation_results(source)
-        (res isa DataFrame) ? res : extract_annual_production(res[:agent_df], res[:model_df])
+    ann_df = if source isa AbstractString
+        load_simulation_results(source)
     elseif source isa Tuple && length(source) == 2 &&
            source[1] isa DataFrame && source[2] isa DataFrame
         extract_annual_production(source[1], source[2])
@@ -2396,7 +2398,7 @@ end
 Extract or reconstruct an S x T stage abundance matrix from simulation results.
 Supports:
 - `DataFrame`: Annual production table with `:total_numbers` and `:legal_numbers`.
-- `String`: File path to CSV simulation output.
+- `AbstractString`: Tethys lakehouse collection path.
 - `StandardABM`: Running simulation model.
 
 # Arguments
@@ -2735,23 +2737,40 @@ function fit_generalized_leslie_model(
     eig_right = eigen(A)
     eigenvalues = eig_right.values
     moduli = abs.(eigenvalues)
-    max_idx = argmax(moduli)
+    max_mod_r = maximum(moduli)
+    candidates_r = findall(m -> isapprox(m, max_mod_r; atol = 1e-4), moduli)
+    best_cand_r = if length(candidates_r) == 1
+        candidates_r[1]
+    else
+        scores_r = [abs(real(eig_right.vectors[1, k])) +
+                    sum(abs.(real(eig_right.vectors[repro_indices, k]))) for k in candidates_r]
+        candidates_r[argmax(scores_r)]
+    end
 
-    lambda_1 = real(eigenvalues[max_idx])
+    lambda_1 = real(eigenvalues[best_cand_r])
     lambda_1 = max(lambda_1, 1.0e-6)
     r_growth = log(lambda_1)
 
     # Right Eigenvector -> Stable Stage Distribution (SSD)
-    w_raw = abs.(real.(eig_right.vectors[:, max_idx]))
+    w_raw = abs.(real.(eig_right.vectors[:, best_cand_r]))
     sum_w = sum(w_raw)
     stable_stage_dist = (sum_w > 0.0) ? (w_raw ./ sum_w) : fill(1.0 / S, S)
 
     # Left Eigenvector -> Reproductive Values (RV)
     eig_left = eigen(copy(A'))
     moduli_left = abs.(eig_left.values)
-    max_idx_left = argmax(moduli_left)
-    v_raw = abs.(real.(eig_left.vectors[:, max_idx_left]))
-    ref_v = max(v_raw[1], 1.0e-6)
+    max_mod_l = maximum(moduli_left)
+    candidates_l = findall(m -> isapprox(m, max_mod_l; atol = 1e-4), moduli_left)
+    best_cand_l = if length(candidates_l) == 1
+        candidates_l[1]
+    else
+        scores_l = [abs(real(eig_left.vectors[1, k])) +
+                    sum(abs.(real(eig_left.vectors[repro_indices, k]))) for k in candidates_l]
+        candidates_l[argmax(scores_l)]
+    end
+
+    v_raw = abs.(real.(eig_left.vectors[:, best_cand_l]))
+    ref_v = v_raw[1] > 1e-6 ? v_raw[1] : (maximum(v_raw) > 1e-6 ? maximum(v_raw) : 1.0)
     reproductive_vals = v_raw ./ ref_v
 
     # Damping Ratio: the recovery rate λ₁ / |λ₂| — how much faster the dominant

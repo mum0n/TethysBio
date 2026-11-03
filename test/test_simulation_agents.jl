@@ -134,16 +134,32 @@ include("test_fixtures.jl")
         @test all(iszero, ann.catch_total)   # fishing_probability_daily defaults to 0
         @test :surplus_production_legal in propertynames(ann)
 
-        # Saving simulation results with custom snapshot_day
-        tmp_csv = tempname() * ".csv"
-        save_simulation_results(tmp_csv, agent_df, model_df; snapshot_day = 150.0)
-        @test isfile(tmp_csv)
-        loaded_df = load_simulation_results(tmp_csv)
+        # Save and reload a compressed Parquet lakehouse collection.
+        tmp_collection = joinpath(mktempdir(), "simulation_results")
+        saved_path = save_simulation_results(
+            tmp_collection,
+            agent_df,
+            model_df;
+            snapshot_day = 150.0,
+            meta = Dict(:seed => 42, :scenario => "unit test")
+        )
+        @test saved_path == normpath(tmp_collection)
+        @test isfile(joinpath(tmp_collection, "annual_production.parquet"))
+        @test isfile(joinpath(tmp_collection, "run_metadata.parquet"))
+        loaded_df = load_simulation_results(tmp_collection)
         @test nrow(loaded_df) == 1
         @test loaded_df.time[1] == 150.0
         @test :mature_females in propertynames(loaded_df)
         @test :total_egg_production in propertynames(loaded_df)
-        rm(tmp_csv, force=true)
+        @test isequal(loaded_df, extract_annual_production(
+            agent_df, model_df; snapshot_day = 150.0
+        ))
+        save_simulation_results(
+            tmp_collection, agent_df, model_df; snapshot_day = 150.0
+        )
+        @test isequal(load_simulation_results(tmp_collection), loaded_df)
+        @test_throws ArgumentError resolve_simulation_results_path("../outside")
+        @test_throws ArgumentError resolve_simulation_results_path(".")
 
         # CLI --snapshot_day parsing test
         cli_parsed2 = parse_cli_args(["--snapshot_day=260.0", "--snapshot_day=260.0"])
@@ -154,14 +170,18 @@ include("test_fixtures.jl")
         @test nrow(ann_freq90) == 4
         @test ann_freq90.time == [90.0, 180.0, 270.0, 360.0]
 
-        # Saving simulation results with custom frequency_days
-        tmp_csv2 = tempname() * ".csv"
-        save_simulation_results(tmp_csv2, agent_df, model_df; frequency_days = 120.0)
-        @test isfile(tmp_csv2)
-        loaded_freq_df = load_simulation_results(tmp_csv2)
+        # Persist a subannual sampling interval through the same lakehouse API.
+        tmp_freq_collection = joinpath(mktempdir(), "subannual_results")
+        save_simulation_results(
+            tmp_freq_collection,
+            agent_df,
+            model_df;
+            frequency_days = 120.0
+        )
+        @test isfile(joinpath(tmp_freq_collection, "annual_production.parquet"))
+        loaded_freq_df = load_simulation_results(tmp_freq_collection)
         @test nrow(loaded_freq_df) == 3
         @test loaded_freq_df.time == [120.0, 240.0, 360.0]
-        rm(tmp_csv2, force=true)
 
         # CLI sampling-interval and snapshot-day parsing, exact names only
         cli_parsed_freq = parse_cli_args(["--frequency_days=90.0"])
@@ -982,6 +1002,18 @@ include("test_fixtures.jl")
         @test safe_mean(x for x in Float64[]) == 0.0
         @test safe_sum(x for x in Float64[]) == 0.0
         @test safe_mean(x for x in 1.0:3.0) == 2.0
+
+        # When a model initializes with zero individuated agents (e.g. pure egg or
+        # larval cohort baselines), data collection must initialize and record
+        # empty frames cleanly without throwing ArgumentError from Agents.jl.
+        m_zero = initialize_model(; n_agents = 0, grid = (10, 10), seed = 123)
+        @test nagents(m_zero) == 0
+        adf_zero, mdf_zero = run_simulation(m_zero, 3)
+        @test nrow(adf_zero) == 4
+        @test nrow(mdf_zero) == 4
+        @test :sum_mass in propertynames(adf_zero)
+        @test adf_zero[1, :sum_mass] == 0.0
+        @test adf_zero[1, :length_stage] == 0.0
     end
 
     @testset "Maturity ogive criterion compares like with like" begin

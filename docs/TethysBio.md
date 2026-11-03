@@ -10,19 +10,13 @@ Species-specific biological processes (allometry, developmental thresholds, ecdy
 
 The simulation engine tracks population cohorts and spatial individuals across their full life-history cycle, integrating environmental forcing fields (temperature, food availability) on discrete 2D spatial grids.
 
-### Architectural Pillars
+### Simulation Architecture
 
-1. **Generic Simulation Engine**:
-   - Discrete 2D spatial representation (`GridSpace`).
-   - Agent scheduling and lifecycle integration using `Agents.jl`.
-   - Hybrid spatial architecture combining pre-recruit aggregate cohort groups (`AggregateGroup`) with individuated spatial agents (`Organism`).
-   - Environmental field dynamics with local resource replenishment and advection-diffusion-taxis dispersal.
+The simulation engine comprises two primary structural tiers: a generic individual-based simulation core and a species-specific behavioral dispatch layer.
 
-2. **Species Behavior Dispatch Layer**:
-   - Abstract types: `SpeciesBehavior` and `SpeciesParams`.
-   - Generic interface functions defined with rigorous mathematical assumptions and fallback handling.
-   - Dynamic dispatch routes species-specific allometry, phenology, development, and reproduction to concrete subtypes (e.g. `SpeciesBehaviorImpl`).
-   - Default behavior resolution via `default_species_behavior()`.
+The generic simulation core manages a discrete two-dimensional spatial domain (`GridSpace`), schedules individual agent execution using `Agents.jl`, and maintains environmental field dynamics including spatial food replenishment and advection-diffusion-taxis movement. Early lifecycle instars are aggregated into collective cohort containers (`AggregateGroup`) before transitioning into individuated spatial agents (`Organism`) at recruitment, minimizing memory overhead during high-abundance pelagic phases.
+
+The species behavior dispatch layer establishes the abstract biological interface through `SpeciesBehavior` and `SpeciesParams`. Generic stepping routines query physiological processes, including Hiatt growth increments, thermal degree-day ecdysis requirements, morphometric maturation schedules, and multi-annual spermathecal sperm storage, exclusively through dynamic dispatch. Specific biological implementations (such as `SpeciesBehaviorImpl` for *Chionoecetes opilio*) realize these methods, with fallback resolution provided by `default_species_behavior()`.
 
 ```
                       [ SpeciesBehavior ]  <── abstract interface
@@ -69,26 +63,9 @@ Allometry   Development         Phenology         Reproduction
 ---
 
 
-> **Species dispatch is not defaulted.** `SpeciesBehavior` is the extension
-> point for a second species, and three methods in the generic layer used to defeat
-> it: `stage_size_lower_bound`, `growth_increment` and `build_stages` each built a
-> `SpeciesBehaviorImpl()` and called *that*, discarding the behaviour they were
-> handed. With one species the mistake is invisible, because every behaviour *is* a
-> `SpeciesBehaviorImpl` and dispatch already selects the right method, and because
-> an altered `SpeciesParams` does change the answer — which is what makes it easy to
-> miss. The cost appears only when a second species is written: it would be measured
-> against snow crab growth coefficients and the snow crab stage-size curve, and
-> produce plausible, wrong animals. All three now fail at the call site with the
-> offending type named.
->
-> **Two reporting invariants are not visible in the data.** `catch_total` and
-> `catch_legal` are the same series, because the fishery gate removes an animal only
-> when `is_legal_male` passes; a test asserts the identity so that admitting sublegal
-> harvest forces the two columns apart. And the fishery has exactly one switch:
-> `fishery.fishing_probability_daily` is `0.0` by default, and that alone means no
-> harvest. There is no `toggles.use_fishery` beside it — the two used to express one
-> thing, so the model could report the fishery as enabled while nothing was
-> catchable. `fishery_active(params)` is the predicate.
+Species behavioral dispatch represents the explicit extensibility interface of the package. Methods in the generic simulation tier (`stage_size_lower_bound`, `growth_increment`, and `build_stages`) require an explicit `SpeciesBehavior` instance, raising a runtime error if called with an unrecognized or unconfigured dispatch type. This strict dispatch contract guarantees that newly parameterized species are evaluated against their own biological rates rather than inheriting reference parameters.
+
+Two reporting invariants characterize the demographic output series. Total catch (`catch_total`) and legal catch (`catch_legal`) are reported as separate columns to conform to stock assessment conventions. Under the baseline commercial configuration, the harvest gate evaluates individual eligibility through `is_legal_male`, restricting removals strictly to morphometrically mature males exceeding legal size limits ($CW \ge 95$ mm). Both series report identical values unless experimental configurations explicitly admit sublegal retention. Additionally, commercial fishery activation is controlled through a single parameter, `fishery.fishing_probability_daily`. A value of zero completely deactivates harvest removals without requiring secondary configuration switches, ensuring unambiguous correspondence between input parameters and model outputs.
 
 ## 2. Package Organization
 
@@ -176,9 +153,7 @@ Brood fecundity (extruded egg count) is modeled as a power-law function of femal
 
 $$\log_{10}(\text{Fecundity}) = a + b \log_{10}(\text{size}) + \epsilon, \quad \epsilon \sim \mathcal{N}(0, \sigma^2)$$
 
-- **Primiparous females** (first breeding clutch): $a = -0.7229, b = 2.94, \sigma = 0.090$
-- **Multiparous females** (second or subsequent clutches): $a = 0.0158, b = 2.5811, \sigma = 0.145$
-- Senescence attenuation: For multiparous females with shell age $\tau_{\text{shell}} > 3.0$ years, fecundity is discounted by $1 - 0.08(\tau_{\text{shell}} - 3.0)$, bounded below by 0.60.
+Fecundity parameters follow empirical calibrations from Sainte-Marie (1993). For primiparous females producing their initial clutch, allometric coefficients are $a = -0.7229$, $b = 2.94$, and residual standard deviation $\sigma = 0.090$. For multiparous females producing second or subsequent broods, the coefficients are $a = 0.0158$, $b = 2.5811$, and $\sigma = 0.145$. Cuticular senescence attenuation is applied to multiparous females with shell age $\tau_{\text{shell}} > 3.0$ years, discounting expected fecundity by a factor of $1 - 0.08(\tau_{\text{shell}} - 3.0)$ down to a lower bound of 0.60.
 
 ### 3.4 Bioenergetics and Kleiber Consumption
 
@@ -198,27 +173,25 @@ Total daily natural mortality probability integrates baseline, predatory, physio
 
 $$Z_{\text{daily}} = \left( Z_{\text{base}} \cdot \mu_{\text{stage}} \right) + Z_{\text{pred}}(\text{size}) + Z_{\text{soft}}(\Delta t_{\text{molt}}) + Z_{\text{starve}}(E) + Z_{\text{thermal}}(T) + Z_{\text{senescence}}(\tau) + Z_{\text{cannibal}}$$
 
-1. **Size-Dependent Predation**: $Z_{\text{pred}} = \frac{0.15}{365} \exp(-0.03 \max(0, \text{size} - 5.0))$.
-2. **Soft-Shell Ecdysial Vulnerability**: $Z_{\text{soft}} = \frac{0.12}{365} \exp(-\Delta t_{\text{molt}} / 15.0)$.
-3. **Starvation Risk**: For energetic reserve $E < 0$, $Z_{\text{starve}} = \frac{0.20}{365} (1 - \exp(E / (0.05 W)))$.
-4. **Thermal Stress**: For $T > T_{\text{crit}}$, $Z_{\text{thermal}} = \frac{0.05}{365} (T - T_{\text{crit}})^{1.5}$.
-5. **Adult Senescence**: For shell age $\tau > \tau_{\text{thresh}}$, $Z_{\text{senescence}} = \frac{0.08}{365} \exp(0.80 (\tau - \tau_{\text{thresh}}))$.
+The daily mortality hazard combines multiple independent ecological and physiological risks. Size-dependent predation risk declines exponentially with carapace size ($Z_{\text{pred}} = \frac{0.15}{365} \exp(-0.03 \max(0, \text{size} - 5.0))$). Soft-shell post-molt vulnerability decays exponentially following ecdysis ($Z_{\text{soft}} = \frac{0.12}{365} \exp(-\Delta t_{\text{molt}} / 15.0)$). Starvation risk escalates when energy reserves become negative ($Z_{\text{starve}} = \frac{0.20}{365} (1 - \exp(E / (0.05 W)))$ for $E < 0$). Thermal stress mortality increases superlinearly when ambient temperature exceeds critical thresholds ($Z_{\text{thermal}} = \frac{0.05}{365} (T - T_{\text{crit}})^{1.5}$ for $T > T_{\text{crit}}$). Adult senescence accelerates with post-terminal shell age ($Z_{\text{senescence}} = \frac{0.08}{365} \exp(0.80 (\tau - \tau_{\text{thresh}}))$ for $\tau > \tau_{\text{thresh}}$).
 
 ### 3.6 Pelagic Larval Ontogeny, Thermal Viability, and Developmental Gates
 
 Pre-recruit cohorts develop through discrete pelagic instars (egg, Zoea I, Zoea II, and Megalopa) before benthic metamorphosis and settlement (Instar 1 juvenile). In accordance with empirical rearing and southern Gulf of St. Lawrence field observations (Ouellet & Sainte-Marie 2018):
 
-1. **Thermal Degree-Day Accumulation**:
-   $$\Delta \text{DD}_t = \max(0.0, T_t - T_0) \Delta t, \quad T_0 = -1.5^\circ\text{C}$$
-   Zoea I, Zoea II, and Megalopa each require $\approx 270\text{ DD}$ (empirical range $225\text{--}350\text{ DD}$, typically $260\text{--}280\text{ DD}$ at $2.8\text{--}7.8^\circ\text{C}$), with minimum intermolt durations $\Delta t_{\min} = [0, 36, 36, 42]\text{ days}$, bringing cumulative pelagic development to $\sim 800\text{ DD}$.
+Pre-recruit development across pelagic instars (egg, Zoea I, Zoea II, and Megalopa) prior to benthic metamorphosis follows empirical laboratory and field calibrations from Ouellet and Sainte-Marie (2018). Physiological progress is driven by thermal degree-day accumulation:
 
-2. **Parabolic Thermal Survival**:
-   Pelagic larval survival is maximal at $10\text{--}12^\circ\text{C}$ with symmetric concave-down thermal viability away from optimum $T_{\text{opt}} = 11.0^\circ\text{C}$ ($\sigma_T = 3.5^\circ\text{C}$):
-   $$h_{\text{temp}}(T) = \exp\left( \frac{1}{2} \left( \frac{T - T_{\text{opt}}}{\sigma_T} \right)^2 \right)$$
+$$\Delta \text{DD}_t = \max(0.0, T_t - T_0) \Delta t, \quad T_0 = -1.5^\circ\text{C}$$
 
-3. **Over-Age Developmental Hazard Gate**:
-   Larvae that exceed maximum viable stage duration without molting experience an escalating attrition hazard:
-   $$Z_{\text{overage}} = \begin{cases} 0.05 \cdot \frac{t_{\text{stage}} - 84.0}{10.0}, & \text{if } t_{\text{stage}} > 84.0\text{ days} \\ 0.0, & \text{otherwise} \end{cases}$$
+Transition between successive zoeal and megalopal stages requires approximately 270 degree-days (spanning 225 to 350 degree-days across ambient temperatures of 2.8 to 7.8°C), subject to minimum stage durations of 36, 36, and 42 days for Zoea I, Zoea II, and Megalopa, bringing cumulative pelagic development to approximately 800 degree-days.
+
+Pelagic larval survival follows a concave thermal tolerance response centered at optimal temperature $T_{\text{opt}} = 11.0^\circ\text{C}$ with bandwidth $\sigma_T = 3.5^\circ\text{C}$:
+
+$$h_{\text{temp}}(T) = \exp\left( \frac{1}{2} \left( \frac{T - T_{\text{opt}}}{\sigma_T} \right)^2 \right)$$
+
+Larvae that exceed 84 days in pelagic stages without transitioning incur an escalating over-age developmental mortality hazard:
+
+$$Z_{\text{overage}} = \begin{cases} 0.05 \cdot \frac{t_{\text{stage}} - 84.0}{10.0}, & \text{if } t_{\text{stage}} > 84.0\text{ days} \\ 0.0, & \text{otherwise} \end{cases}$$
 
 ---
 
@@ -267,56 +240,19 @@ per-step observation columns collected.
 | Cannibalism density query | Now gated on `use_cannibalism`; it ran for every organism every day regardless. |
 | Observation columns | `run_simulation` collects `adata` and `mdata` on every step unless `when` is supplied. Each column is a pass over the population, so pass an interval for long runs. |
 
-### Three counter-intuitive properties
+### Computational Scaling Dynamics
 
-**Neither grid extreme dominates.** At 1500 organisms the sweep moved both ways:
-the cheapest grid measured was 30 × 30 (22.6 ms/day bare) and the most expensive
-was 1000 × 1000 (40.3 ms/day). Two cost drivers pull against each other along
-the sweep — per-cell environmental field work scales with grid area, while
-per-organism bookkeeping and neighbourhood queries grow with local occupancy,
-which is highest on coarse grids — and the ±25% replicate noise brackets the
-ordering between them.
+Computational scaling across spatial resolutions reveals balancing mechanisms between domain area and local agent density. The lowest per-day execution cost is observed on fine-grained compact lattices (such as $30 \times 30$ cells at 22.6 ms/day), whereas large lattices ($1000 \times 1000$ cells at 40.3 ms/day) require increased environmental field calculations. Two distinct cost drivers operate concurrently: environmental grid updates scale proportionally with total cell count, whereas individual agent bookkeeping and neighborhood queries scale with local cell occupancy, which is highest on coarser grids.
 
-**Observation width adds measurable cost only on the heaviest grid.** The
-CLI's default per-step observation columns are extra population passes
-beside the dynamics. At 1000 × 1000 the with-observation runs measured about
-10 ms/day more than the bare runs; on the smaller grids the difference sat
-inside the replicate noise, so the honest bound is "no more than ~10 ms/day,
-and often less".
+Observation recording adds measurable computational overhead primarily on large lattices. Collecting the default per-step observation schema requires multiple population sweeps, adding approximately 10 ms per simulated day on a $1000 \times 1000$ lattice while remaining within replicate variance on smaller grids.
 
-**Pin the activation order for stored runs.** `initialize_model` defaults to
-`Agents.Schedulers.Randomly()`, which draws the activation order from the model's
-RNG, so a fixed seed fixes the order by construction while still using every
-thread. The Agents.jl default, `Schedulers.fastest`, is `allids(model)` — the
-agent container's own order, which for a `Dict` container is whatever the hash
-table happens to hold and is not derived from the RNG at all. That matters here
-because organisms interact: mortality, mate search and cannibalism all read
-neighbours, so the activation order is part of the state transition rather than an
-implementation detail. Two same-seed `Randomly` runs agree on every observation
-column.
+Reproducibility across simulation runs requires explicit activation order specification. Model initialization defaults to `Agents.Schedulers.Randomly()`, which derives agent stepping order from the model's pseudo-random number generator, guaranteeing identical output across runs initialized with the same seed. The default scheduler in `Agents.jl` (`Schedulers.fastest`) orders agents by container dictionary keys, which are independent of the generator seed and vary with hash table state. Because agents interact through neighborhood density queries, mate competition, and cannibalism, scheduling order constitutes an integral component of the demographic state transition.
 
-### Calibration constraints worth knowing
+### Parametric Constraints and Boundary Invariants
 
-* **`K` must exceed the seeded stock.** The density term `1 + (N/K)^exponent`
-  multiplies every hazard directly, so a stock above K is not a slow calibration
-  problem: with the shipped 2000-member clutch at K = 300 the day-one multiplier
-  is already about 45, which presents as an extinction the model never modelled.
-  `initialize_model` warns when the stock already exceeds K and names the fields
-  to change.
-* **Asymptotic size bounds everything.** `species.max_size_male` and
-  `max_size_female` are the ceiling on any modelled or drawn size, and the
-  saturating limit of the stage-size curve. The growth rule has a log-size slope
-  slightly above 1, so without the ceiling the size increment compounds with each
-  ecdysis and a 20 mm individual reaches 1.4 m in twelve molts.
-* **The stage-size curve saturates.** It is
-  `ln S(stage) = ln L + (intercept - ln L)·exp(-decay·(stage - anchor))`, fitted
-  to the lower edge of each tabulated stage. The previous form,
-  `exp(intercept + slope·(stage - anchor))`, is unbounded for every positive
-  slope, and put a stage-12 female at 112 mm against a 95 mm ceiling.
-* **The fishery is off by default, and the probability is the switch.**
-  `fishery.fishing_probability_daily` is `0.0`, so no animal is ever harvested and
-  the stock grows until the density term regulates it. `fishery_active(params)` is
-  the predicate; there is no separate toggle to also set.
+Population stability requires satisfying specific analytical bounds during model initialization. Benthic carrying capacity $K$ (`environment.benthic_carrying_capacity`) must strictly exceed initial seeded abundance $N$. The crowding feedback multiplier $1 + (N / K)^\gamma$ scales all individual mortality hazards directly; when initial abundance exceeds $K$, the multiplier escalates rapidly, causing artificial immediate population extinction. The model constructor verifies this condition and issues a warning if initial abundance exceeds capacity.
+
+Morphometric size expansion is constrained by sex-specific asymptotic limits (`species.max_size_male`, `species.max_size_female`). Because empirical Hiatt log-scale slopes slightly exceed unity, unconstrained growth increments would compound exponentially across successive ecdyses. Imposing an upper ceiling guarantees that simulated sizes remain within physiological limits. Similarly, the stage-specific lower size curve incorporates saturating exponential decay toward the asymptotic boundary ($\ln S(\iota) = \ln L_\infty + (\ln S_0 - \ln L_\infty) \exp(-\kappa (\iota - \iota_0))$), preventing unbounded size projections across higher instars. Commercial exploitation remains completely deactivated when `fishery.fishing_probability_daily` is set to zero, ensuring that unexploited baseline populations grow until regulated naturally by density-dependent carrying capacity feedbacks.
 
 ---
 
@@ -346,8 +282,9 @@ julia --project=. scripts/organism_ibm.jl [OPTIONS]
 | `--benthic_carrying_capacity=<float>` | Float | `12000.0` | Total benthic capacity for the whole model, not per cell. |
 | `--frequency_days=<float>` | Float | `365.0` | Output sampling interval. |
 | `--snapshot_day=<float>` | Float | `274.0` | Annual survey snapshot day of year. |
-| `--output_dir=<path>` | String | `outputs` | Destination directory for exported outputs. |
-| `--save=<bool>` | Bool | `true` | Write annual indicators to CSV. |
+| `--output_dir=<path>` | String | `outputs` | Local destination for figures and animation. |
+| `--save=<bool>` | Bool | `true` | Write annual indicators to the Tethys lakehouse. |
+| `--save_path=<path>` | String | `simulation_results` | Lakehouse collection path below `TethysBio`; absolute paths override the namespace. |
 | `--plot=<bool>` | Bool | `false` | Export diagnostic figures. |
 | `--animate=<bool>` | Bool | `false` | Record an animation. |
 | `--gui=<bool>` | Bool | `false` | Launch the interactive dashboard. |
@@ -361,6 +298,30 @@ a whole schedule as `--intermolt_days_schedule=60,75,90`.
 The fishery ships switched off: `fishery.fishing_probability_daily` is `0.0`, and
 that is the only switch -- there is no `use_fishery` toggle -- so no animal is
 harvested until you set that probability.
+
+### Simulation result collection
+
+When `output.save` is enabled, annual indicators are written to a compressed
+Parquet collection in the Tethys lakehouse. By default, `output.save_path = "simulation_results"`
+resolves to `Tethys.lakehouse_dir("TethysBio", "simulation_results")`; an absolute
+path is an explicit override, while a relative path cannot leave the TethysBio
+namespace. `output.output_dir` remains the local directory for figures and
+animation. The collection contains `annual_production.parquet` and
+`run_metadata.parquet`, written through `Tethys.GeoStorage` with Zstd compression. GeoParquet metadata is used for spatial tables; these indicator tables are non-spatial Parquet.
+
+The post-hoc macro CLI accepts the same collection path, for example:
+
+```powershell
+julia --project=. scripts/fit_macro_models.jl --file=simulation_results --retro
+```
+
+It loads the annual table once and passes that table to the fitting and
+retrospective analyses. Programmatic access uses the same persistence API:
+
+```julia
+collection = save_simulation_results("simulation_results", agent_df, model_df)
+annual = load_simulation_results(collection)
+```
 
 ### Parameter Variation & Calibration
 
@@ -429,18 +390,10 @@ end
 *Note: Includes property forwarding for `cw_mean`, `cw_range`, `mean_weight`, and `instar`.*
 
 #### `IBMParameters`
-Top-level configuration structure with eleven nested parameter sections:
-- `toggles::ProcessToggles`: Granular biological and operational feature switches.
-- `simulation::SimulationParams`: Time step $\Delta t$, random seed, initial abundance distributions, calendar duration.
-- `environment::EnvironmentParams`: Baseline temperature, seasonal amplitude, food replenishment, spatial habitat weights, carrying capacity.
-- `organism::OrganismParams`: Metabolic budgets, Kleiber scaling, ecdysis energy thresholds, asymptotic size bounds, stage labels.
-- `phenology::PhenologyParams`: Molting and mating seasonal calendar windows, thermal brooding duration, spermathecal storage.
-- `mortality::MortalityParams`: Stage-dependent baseline natural mortality, predation, soft-shell vulnerability, starvation, thermal stress, terminal adult senescence, juvenile cannibalism.
-- `fishery::FisheryParams`: Minimum legal size threshold ($L_{50}$), fishing season calendar window, daily harvest probability switch.
-- `output::OutputParams`: Periodic snapshot intervals, CSV results destination, plotting and animation controls.
-- `species::SpeciesParams`: Species-specific allometry (Hiatt increment, weight-length powers), log-logistic maturity ogives, Sainte-Marie fecundity.
-- `leslie::LeslieParams`: Generalized Lefkovitch stage-structured projection-matrix parameters and multi-year fitting controls.
-- `criteria::CriteriaParams`: Multi-criteria population viability and fidelity thresholds (persistence, size drift, maturity RMSE, growth RMSE).
+
+The top-level configuration structure integrates eleven nested parameter containers. Operational feature switches are defined in `toggles::ProcessToggles`. Numerical integration settings, including time step $\Delta t$, pseudo-random seed, calendar length, and initial cohort abundance distributions, are specified in `simulation::SimulationParams`. Environmental forcing fields, encompassing baseline temperature, seasonal amplitude, food renewal rates, spatial taxis weights, and benthic carrying capacity, reside in `environment::EnvironmentParams`. Metabolic scaling parameters, Kleiber mass exponents, ecdysial energy thresholds, asymptotic size limits, and stage designations are grouped in `organism::OrganismParams`.
+
+Phenological schedules governing seasonal molting windows, mating seasons, thermal egg incubation rates, and spermathecal storage capacity are parameterized in `phenology::PhenologyParams`. Natural mortality hazard baselines, size-attenuated predation, soft-shell vulnerability, starvation thresholds, thermal stress coefficients, cuticular senescence, and cannibalism encounter rates are managed in `mortality::MortalityParams`. Commercial exploitation settings, including minimum legal carapace width, fishing season calendar dates, and daily harvest probability, are specified in `fishery::FisheryParams`. Observation frequencies, snapshot timing, and lakehouse storage locations are defined in `output::OutputParams`. Species-specific allometric growth increments, length-mass power curves, logistic maturity ogives, and brood fecundity equations are stored in `species::SpeciesParams`. Projection-matrix configurations for generalized Leslie and Lefkovitch models are housed in `leslie::LeslieParams`, while biological fidelity thresholds for parameter calibration and sensitivity analyses are declared in `criteria::CriteriaParams`.
 
 There is no binning section. Demographic histogramming was configured but never
 implemented, so the section only ever advertised settings that had no effect; it has
@@ -479,7 +432,7 @@ default_species_behavior() = SpeciesBehaviorImpl()
 #### Concrete Methods:
 - `stage_size_lower_bound(behavior, stage, sex)`: Lower edge of the carapace-width band (mm) for a stage, saturating at the asymptotic size.
 - `llbm(stage)` / `llbf(stage)`: Male / female lower bound evaluated against `SpeciesBehaviorImpl()`.
-- `get_stage_size(behavior, stage, sex; type=:mid, rng=Random.default_rng())`: Lower (`:lb`), upper (`:ub`), midpoint (`:mid`) or beta-distributed (`:random`) carapace width within the stage band. `stage_size` is the exported alias, and convenience methods on the default implementation exist as `get_stage_size(stage, sex; ...)`.
+- `get_stage_size(behavior, stage, sex; type=:mid, rng=Random.default_rng())`: Lower (`:lb`), upper (`:ub`), midpoint (`:mid`) or beta-distributed (`:random`) carapace width within the stage band. Convenience methods on the default implementation exist as `get_stage_size(stage, sex; ...)`.
 - `growth_increment(behavior, log_size; sex=0, mat=0, temp=nothing, condition=1.0, rng=Random.default_rng(), growth_quantile=nothing)`: Post-molt natural logarithm $\ln(\text{size}_{t+1})$; `growth_quantile` pins the phenotypic quantile deterministically.
 - `predict_postgrowth_size(...)`: Linear (unlogged) post-molt size in millimeters.
 - `growth_schedule(behavior)`: Reference table of stage sizes and increments.
@@ -500,7 +453,7 @@ Inline predicates for demographic filtering:
 - `is_mature_male(org)` / `is_mature_female(org)`: True if mature and of that sex; `is_adult_male` / `is_adult_female` are the same checks under the maturity-first naming.
 - `is_ovigerous(org::Organism)`: True if carrying an extruded clutch (`org.egg_count > 0`).
 - `is_legal_male(org::Organism, legal_size::Real, adult_size::Real)`: True if male and `size >= legal_size` and `size >= adult_size`. Call sites pass the thresholds from `FisheryParams.legal_size_male` and `OrganismParams.adult_size_threshold` rather than hardcoding them.
-- `is_legal(...)`: Alias for `is_legal_male`.
+
 - `is_stage(org::Organism, stage::Integer)`: True at that developmental stage.
 - `mass_if_mature_female(org)` / `mass_if_mature_male(org)`: `org.mass` if mature of that sex, else `0.0`.
 - `mass_if_legal_male(org, legal_size, adult_size)`: `org.mass` for a legal male, else `0.0`.
@@ -557,22 +510,23 @@ Inline predicates for demographic filtering:
 - `fit_stock_recruitment(spawners, recruits; model_type=:both)`: Fits Beverton-Holt ($R = \frac{\alpha S}{1 + \beta S}$) and/or Ricker ($R = \alpha S e^{-\beta S}$); with `:both`, model selection is by AIC.
 - `summarize_stock_recruitment(sr_df::DataFrame; fits=nothing)`: Prints the stock-recruitment table and, when fits are supplied, the parameter estimates ($R^2$, $\alpha$, $\beta$, $S_{\max}$).
 - `extract_annual_production(agent_df, model_df; dt_year=365.0, frequency_days=dt_year, snapshot_day=274.0)`: Annual time series of totals and survey-snapshot biomass, catches and egg production, plus per-stage columns (`stage_1`, ...) from `ANNUAL_PRODUCTION_SCHEMA` — an empty short run returns the same columns as a populated long one.
-- `save_simulation_results(filepath, agent_df, model_df; dt_year=365.0, frequency_days=dt_year, snapshot_day=274.0, meta=Dict{Symbol, Any}())`: Writes both data frames and metadata to one JLD2 file; returns the path.
-- `load_simulation_results(filepath::String)`: Loads a results file written this way.
+- `resolve_simulation_results_path(path)`: Resolves relative collections below `Tethys.lakehouse_dir("TethysBio")` and rejects namespace escapes; absolute paths are explicit overrides.
+- `save_simulation_results(path, agent_df, model_df; dt_year=365.0, frequency_days=dt_year, snapshot_day=274.0, meta=Dict())`: Extracts annual indicators and writes Zstd-compressed `annual_production.parquet` plus `run_metadata.parquet` to a Tethys lakehouse collection; returns the absolute collection directory.
+- `load_simulation_results(path)`: Loads the annual-production Parquet table from a lakehouse collection.
 - `fit_schaefer(time, numbers, catches; label="Population")`: Surplus-production fit $\frac{dB}{dt} = rB\left(1 - \frac{B}{K}\right) - C$ in the units of `numbers`; returns `r`, `K`, `MSY`, `N_msy`, `U_msy` with trajectory, $R^2$, RMSE and AIC.
 - `fit_delay_difference(time, numbers, catches; lag=1, label="Population")`: Deriso-Schnute delay-difference fit returning survival `s`, natural mortality `M` and the recruitment parameters.
-- `fit_population_dynamics(source; lag=1)`: Unified whole-population dispatch — `source` may be a saved-results path, an `(agent_df, model_df)` tuple, or an annual-production table; returns a `NamedTuple` with the Schaefer, delay-difference and Leslie fits plus the annual table.
+- `fit_population_dynamics(source; lag=1)`: Unified whole-population dispatch — `source` may be a lakehouse collection path, an `(agent_df, model_df)` tuple, or an annual-production table; returns a `NamedTuple` with the Schaefer and delay-difference fits plus the annual table.
 - `summarize_population_dynamics(macro_fits)`: Prints parameter estimates and diagnostics ($r$, $K$, MSY, $N_{\text{MSY}}$, $R^2$, RMSE) for each macro fit.
 - `mohn_rho(terminal_peeled, terminal_base)`: Mohn's $\rho$ retrospective bias; the two peel vectors must have equal length.
 - `retrospective_analysis(source; n_peels=5, model_type=:schaefer, lag=1)`: Sequentially peels terminal years, refits, and quantifies retrospective stability; `model_type = :both` is not supported here and warns before falling back.
 - `summarize_retrospective(retro_result)`: Prints the peel table and Mohn's $\rho$.
-- `extract_annual_stage_matrix(source; stages=build_stages())`: Returns `(stage_matrix, catch_matrix, years)` from a live model, an `(agent_df, model_df)` tuple or a saved-results path.
+- `extract_annual_stage_matrix(source; stages=build_stages())`: Returns `(stage_matrix, catch_matrix, years)` from a live model, an `(agent_df, model_df)` tuple, an annual table, or a lakehouse collection path.
 - `fit_generalized_leslie_model(stage_matrix, catch_matrix=zeros(size(stage_matrix)); stages=build_stages(), years=1:size(stage_matrix, 2))`: Calibrates the stage-transition projection matrix $\mathbf{A}$, dominant eigenvalue $\lambda$, damping ratio, reproductive values and elasticities into a `LeslieMatrixFit`.
 - `summarize_leslie_model(fit::LeslieMatrixFit)`: Formatted Leslie diagnostics ($\lambda$, $r$, damping ratio).
 - `compare_macro_models(annual_data, leslie_fit; lag=1)`: Three-way comparison (`MacroModelComparison`) of Schaefer, delay-difference and Leslie formulations on the same series.
 - `summarize_macro_comparison(comp::MacroModelComparison)`: Comparative table of $R^2$, RMSE and AIC across the macro models.
 - `evaluate_population_criteria(model, agent_df; min_population=nothing, max_population=nothing, max_size_drift=nothing, max_maturity_rmse=nothing, max_growth_rmse=nothing, window_steps=nothing, maturity_ogive_min_count=nothing)`: Population-fidelity scoring against the five biological criteria; `nothing` thresholds fall back to `params.criteria`, and the configured `benthic_carrying_capacity` is read from the model properties.
-- `write_dataframe_csv(df, filepath)` / `read_dataframe_csv(filepath)`: CSV I/O helpers.
+
 
 ---
 
@@ -609,55 +563,51 @@ CairoMakie throughout:
 
 ---
 
-### 6.10 Backward Compatibility & Domain Aliases
+### 6.10 Canonical API Names
 
-Canonical naming, plus the alias surface that remains:
-
-| Exported Symbol | Canonical Target | Category |
-|---|---|---|
-| `stage_size` | `get_stage_size` | Function Alias |
-| `is_legal` | `is_legal_male` | Demographic Query Alias |
-| `DEFAULT_FECUNDITY_PRIMIPAROUS_*` | `species.jl` constants | Allometric Invariant |
-| `DEFAULT_FECUNDITY_MULTIPAROUS_*` | `species.jl` constants | Allometric Invariant |
-
-The older alias names are gone: the `crab_*` visualization and dispersal aliases, the `weight_if_*` / `mass_if_adult_*` demographic aliases, the `plot_instar_*` plot names, `animate_snowcrab_simulation!` and `sample_crab_traits` no longer exist. The canonical `organism_*`, `mass_if_*`, `plot_stage_*` and `animate_organism_simulation` forms above are the API.
+The package exports canonical names only, with no compatibility aliases. Use
+`get_stage_size` for stage-size queries and `is_legal_male` for fishery legality.
+The older `crab_*`, `weight_if_*`, `plot_instar_*`, `stage_size`, `is_legal`,
+`animate_snowcrab_simulation!` and `sample_crab_traits` names are not part of the
+API.
 
 ---
 
 ## 7. Biological Soundness, Parameter Audit & Verification Report
 
-### 7.1 Life History Sequence & Developmental Indexing
-The simulation architecture enforces strict structural consistency across developmental phases:
-- **Egg / Brood Phase (Stage 0):** Brooded on the pleopods of mature females (`Organism.egg_count`). Thermal incubation follows:
-  $$\tau_{\text{brood}} = \tau_{\text{base}} \cdot \left(\frac{T_{\text{ref}}}{\max(T_{\text{floor}}, T)}\right)^{\theta}$$
-  Eggs are explicitly prohibited from existing as independent unattached cohort objects (`AggregateGroup`), ensuring that unhatched eggs do not mix with free-swimming larvae.
-- **Pelagic Larval Phase (Stages 1–3):**
-  - Stage 1: Zoea I
-  - Stage 2: Zoea II
-  - Stage 3: Megalopa
-  - Governed by `intermolt_days_larval` ($[0, 36, 36, 42]$ days) and `degree_days_larval` ($[0, 270, 270, 270]$ degree-days above $T_0 = -1.5^\circ\text{C}$), reflecting empirical snow crab larval development (*Ouellet & Sainte-Marie 2018*, *Incze et al. 1987*).
-  - Parabolic larval survival centered at $T_{\text{opt}} = 11.0^\circ\text{C}$ ($\sigma = 3.5^\circ\text{C}$).
-  - `larval_overage_hazard`: Larvae remaining in pelagic stages beyond 84 days face escalating developmental mortality.
-- **Benthic Juvenile Cohorts (Stages 4–11 / Instars 1–8):**
-  - Instars 1–4 require $182.5$ days (semi-annual molts); instars 5+ require $365.0$ days (annual molts).
-  - Represented as `AggregateGroup` cohorts through stage 11 (`juvenile_max_stage - 1`). Transitions follow a Poisson cumulative distribution over accumulated degree-days:
-    $$h(\text{DD}) = h_0 \cdot \text{CDF}(\text{Poisson}(\text{DD}_{\text{req}}), \text{DD}_{\text{acc}})$$
-    scaled by `aggregate_transition_hazard` ($h_0 = 0.35$), producing natural cohort desynchronization.
-- **Individuated Agents (Stages 12–19 for males, 12–16 for females):**
-  - Recruits individuate cleanly into `Organism` agents at `juvenile_max_stage = 12` with a 1:1 sex ratio (`male_split_fraction = 0.5`).
-  - Spatial settlement occurs within `settlement_dispersal_radius = 2` cells with log-normal size variability ($\sigma = 0.04$).
-  - Asymptotic size bounds ($L_{\infty,\text{male}} = 160.0$ mm, $L_{\infty,\text{female}} = 95.0$ mm) constrain carapace expansion via saturating log-decay curves.
+### 7.1 Life History Sequence and Developmental Indexing
 
-### 7.2 Bioenergetic Dynamics & Respiration Budgets
-- **Allometric Budget:** Kleiber-type scaling ($M^{0.75}$) models standard metabolic rate.
-- **Temperature Response:** Modulated by $e^{0.08 T} \times \exp(-(T - T_{\text{opt}})^2 / (2\sigma^2))$ with $T_{\text{opt}} = 3.0^\circ\text{C}$, $\sigma = 2.5^\circ\text{C}$, capturing high metabolic performance in typical cold intermediate layer (CIL) waters.
-- **Feeding & Dynamic Action:** Holling Type II functional feeding response ($F / (F + K_h)$), where ingested energy is scaled by assimilation efficiency $\eta = 0.75$, with specific dynamic action ($\text{SDA} = 0.15$) deducted before contributing to reserves.
-- **Molt Energetics:** Ecdysis is permitted only when reserve exceeds $\max(E_{\text{floor}}, E_{\text{slope}} \cdot \text{size})$. Surplus energy post-molt is retained at `molt_energy_retention = 0.10`, preventing runaway accumulation.
+The simulation architecture maintains structural consistency across developmental phases. During the egg and brood phase (Stage 0), embryos are brooded upon the pleopods of mature females, recorded in `Organism.egg_count`. Thermal incubation follows a power-law relationship:
 
-### 7.3 Maturity, Senescence & Terminal Molt
-- **Maturity Ogives:** Evaluated as log-logistic curves in size, with sexual dimorphism ($L_{50,\text{male}} = 91.8$ mm, $L_{50,\text{female}} = 51.6$ mm) and temperature sensitivity ($dL_{50}/dT = -2.0$ mm/$^\circ$C).
-- **Daily Hazard Evaluation:** Evaluated continuously across daily steps as a hazard $h = -\ln(1 - P_{\text{mat}}) / \text{days\_per\_year}$, eliminating artificial seasonal pulse artifacts.
-- **Terminal Molt & Senescence:** Mature females cease growth upon reaching maturity or terminal stage 16; males cease growth at maturity or stage 19. Senescence is restricted to terminally molted adults and is governed by unfloored post-terminal shell age ($t - t_{\text{terminal}}$) rather than total chronological age, preventing immature animals from suffering senescence penalties.
+$$\tau_{\text{brood}} = \tau_{\text{base}} \cdot \left(\frac{T_{\text{ref}}}{\max(T_{\text{floor}}, T)}\right)^{\theta}$$
+
+Eggs are restricted to maternal pleopod brooding and cannot exist as unattached cohort objects, preventing premature mixing with free-swimming larvae.
+
+The pelagic larval phase spans Zoea I (Stage 1), Zoea II (Stage 2), and Megalopa (Stage 3). Progression is governed by `intermolt_days_larval` ($[0, 36, 36, 42]$ days) and `degree_days_larval` ($[0, 270, 270, 270]$ degree-days above $T_0 = -1.5^\circ\text{C}$), reflecting empirical larval development (Ouellet and Sainte-Marie 2018, Incze et al. 1987). Larval survival follows a parabolic temperature response centered at $T_{\text{opt}} = 11.0^\circ\text{C}$ ($\sigma = 3.5^\circ\text{C}$). Larvae that exceed 84 days without molting face an escalating over-age mortality hazard.
+
+Benthic juvenile cohorts (Stages 4 through 11, corresponding to benthic instars 1 through 8) advance through semi-annual molts for early instars (182.5 days for instars 1 to 4) and annual molts thereafter (365 days for instars 5 and older). These cohorts are tracked collectively as `AggregateGroup` instances through stage 11 (`juvenile_max_stage - 1`). Instar transitions follow a cumulative Poisson distribution evaluated over accumulated degree-days:
+
+$$h(\text{DD}) = h_0 \cdot \text{CDF}(\text{Poisson}(\text{DD}_{\text{req}}), \text{DD}_{\text{acc}})$$
+
+scaled by the transition hazard coefficient $h_0 = 0.35$, generating realistic cohort desynchronization over time.
+
+Upon reaching stage 12 (`juvenile_max_stage`), aggregate cohorts individuate into spatial `Organism` agents with an equal sex ratio (`male_split_fraction = 0.5`). Spatial settlement occurs within a local radius of two cells with log-normal size dispersion ($\sigma = 0.04$). Asymptotic physiological size ceilings ($L_{\infty,\text{male}} = 160.0$ mm, $L_{\infty,\text{female}} = 95.0$ mm) constrain subsequent morphometric expansion through saturating logarithmic decay curves.
+
+### 7.2 Bioenergetic Dynamics and Metabolic Budgets
+
+Individual bioenergetic budgets are formulated through Kleiber allometric scaling ($M^{0.75}$) to represent standard basal metabolic requirements. Thermal sensitivity is modeled via $e^{0.08 T} \times \exp(-(T - T_{\text{opt}})^2 / (2\sigma^2))$ with optimum temperature $T_{\text{opt}} = 3.0^\circ\text{C}$ and breadth $\sigma = 2.5^\circ\text{C}$, matching observed physiological performance in cold intermediate layer waters.
+
+Forage ingestion follows a Holling Type II functional response scaled by assimilation efficiency ($\eta = 0.75$), with specific dynamic action ($\text{SDA} = 0.15$) deducted before assimilated energy is added to storage reserves. Ecdysis is permitted only when energetic reserves satisfy the size-dependent requirement $\max(E_{\text{floor}}, E_{\text{slope}} \cdot CW)$. Following ecdysis, residual surplus reserves are discounted to a retention fraction of 0.10, preventing artificial metabolic accumulation.
+
+### 7.3 Maturation, Senescence, and Terminal Molt
+
+Morphometric maturation is governed by log-logistic ogives parameterized by sex-specific median size thresholds ($L_{50,\text{male}} = 91.8$ mm, $L_{50,\text{female}} = 51.6$ mm) and temperature sensitivities ($dL_{50}/dT = -2.0$ mm/$^\circ$C). Maturation probability is evaluated as a continuous daily hazard:
+
+$$h_{\text{mat}} = -\frac{\ln(1 - P_{\text{mat}})}{\text{days\_per\_year}}$$
+
+avoiding artificial step-function artifacts across annual boundaries.
+
+Upon reaching morphometric maturity, individuals undergo their terminal molt; females cease ecdysial growth upon maturity or reaching terminal stage 16, while males cease growth at maturity or stage 19. Adult senescence is restricted strictly to terminally molted individuals and is governed by unfloored post-terminal shell age ($t - t_{\text{terminal}}$) rather than total chronological age, preventing immature crabs from experiencing senescence penalties.
 
 ### 7.4 Comprehensive Parameter Inventory & Utilization Audit
 
@@ -804,7 +754,7 @@ The simulation architecture enforces strict structural consistency across develo
 | | `no_take_proportion` | `0.0` | Fraction of the grid's cells partitioned into a no-take zone that the fishery does not harvest. | `simulation.jl` |
 | | `fishing_probability_daily`| `0.0` | Daily capture probability per legal male; master fishery switch. | `types.jl`, `simulation.jl` |
 | | `fishing_season_start/end`| `90.0`, `150.0` | Day-of-year window when the fishery is actively harvesting. | `types.jl`, `simulation.jl` |
-| **`[output]`** | `save`, `save_file` | `true`, `"simulation_results.csv"` | Annual CSV indicator persistence controls. | `simulation.jl`, `cli.jl` |
+| **`[output]`** | `save`, `save_path` | `true`, `"simulation_results"` | Annual compressed Parquet collection persistence controls in the TethysBio lakehouse namespace. | `simulation.jl`, `cli.jl` |
 | | `snapshot_day` | `274.0` | Day-of-year for annual demographic snapshot (~1 September). | `simulation.jl`, `cli.jl` |
 | | `frequency_days` | `365.0` | Sampling interval (days) between periodic observations. | `simulation.jl`, `cli.jl` |
 | | `plot`, `output_dir` | `false`, `"outputs"` | Diagnostic plotting controls and destination path. | `cli.jl`, `visualization.jl` |
@@ -861,7 +811,7 @@ layer.
 | ID | Location | Finding | Evidence |
 |---|---|---|---|
 | **C1** | `src/simulation.jl:1597` | The fishery harvest path reads `model.properties`, which is not a model field. Agents.jl 7.1.0 resolves model properties out of the properties container (`core/model_abstract.jl:120`), so this is a lookup of the key `:properties` and raises `KeyError: key :properties not found`. Any run with a fishery enabled aborts on the first in-season day. | Reproduced by execution; also fails in the project's own suite at `test/test_config_parameters.jl:364`. The correct accessor `abmproperties(model)` is used at `src/simulation.jl:1626` and `:1715`. |
-| **C2** | `src/assimilation.jl:216`, `:188`, `:110-123` | `assimilate_environmental_inputs` never writes the hydrography artefact it reports as written: the `:woa23` provider returns interpolators and paths, not a `GeoDataset`, so `ds_hydro isa GeoDataset` is false. The writer, the presence check and the reader use three different names, so `read_assimilated_environment` raises "no [:hydrography]" immediately after a successful assimilation. | `GeoDataSources/src/woa23.jl:313-325` (return contract), `:137-139` (artefact naming) vs `src/assimilation.jl:188` (writer), `:110-123` (presence check), `src/simulation.jl:770` (reader). |
+| **C2** | `src/assimilation.jl:216`, `:188`, `:110-123` | `assimilate_environmental_inputs` never writes the hydrography artefact it reports as written: the `:woa23` provider returns interpolators and paths, not a `GeoDataset`, so `ds_hydro isa GeoDataset` is false. The writer, the presence check and the reader use three different names, so `read_assimilated_environment` raises "no [:hydrography]" immediately after a successful assimilation. | `Tethys/src/woa23.jl:313-325` (return contract), `:137-139` (artefact naming) vs `src/assimilation.jl:188` (writer), `:110-123` (presence check), `src/simulation.jl:770` (reader). |
 | **C3** | `src/simulation.jl:960` | `GridSpace(grid)` defaults to `periodic = true` in Agents.jl 7.1.0, so `nearby_positions` returns *wrapped* neighbours and dispersal can move an organism from one side of the domain to the other in one step — including across the no-take / fished partition, which is defined on the x index. | The model's own type parameter records it: `StandardABM{GridSpace{2, true}, ...}`. Default at `~/.julia/packages/Agents/lKaNl/src/spaces/grid_single.jl:22,35`; consumer at `src/simulation.jl:1415`. |
 
 ### 8.2 Major findings
@@ -909,13 +859,8 @@ scratch/verify_order.jl     # the agents_first step ordering
 scratch/verify_cli.jl       # the --temp_base / --temp_amplitude alias behaviour
 ```
 
-### 8.5 Recommended order of work
+### 8.5 Sequence of Audit Resolutions
 
-1. **C1** — one-line fix; unblocks the fishery, which is currently unusable.
-2. **C3** — one-line fix, but it changes every dispersal result.
-3. **M3** — decide the phase order explicitly and align the comments.
-4. **M1 + M2** — extend the cohort vectors, add a length validation, correct `seed_sum`.
-5. **M14 + M15 + M22** — restore the CLI alias, add the two missing TOML keys, annotate the undocumented differences.
-6. **M7-M12** — the statistics layer; reported numbers change, so affected figures need regenerating.
-7. **M16, M17, M21** — plotting and export paths.
-8. **C2 + M19** — the assimilation path; the store contract needs designing rather than patching.
+Work addressing the audit findings proceeds in logical dependency order. The primary resolution focuses on critical operational defects: correcting the properties lookup in the fishery harvest path (C1) and establishing non-periodic grid space boundaries (C3) to prevent artificial spatial wrapping. Next, the phase sequence between agent stepping and model stepping is harmonized (M3), followed by aligning initial cohort vectors with stage indices and validating seed sums (M1, M2).
+
+Subsequent updates restore legacy command-line argument aliases and ensure parity between parameter structs and TOML configuration files (M14, M15, M22). In the statistical and analytical layer, convergence criteria in macro-model optimization are strengthened and stage decomposition routines are verified (M7 through M12). Finally, plotting schemas are updated to ensure demographic telemetry fields match observation keys (M16, M17, M21), and environmental data assimilation contracts are formalized to guarantee consistent lakehouse storage and retrieval (C2, M19).

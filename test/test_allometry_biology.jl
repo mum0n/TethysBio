@@ -8,6 +8,7 @@ include("test_fixtures.jl")
         @test llbf(7) < llbf(8) < llbf(9) < llbf(10)
 
         # Bounds order: lower bound < upper bound
+        @test !isdefined(TethysBio, :stage_size)
         @test get_stage_size(9, :male; type=:lb) < get_stage_size(9, :male; type=:ub)
         @test get_stage_size(9, :female; type=:lb) < get_stage_size(9, :female; type=:ub)
 

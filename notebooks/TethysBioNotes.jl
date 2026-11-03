@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v1.0.3
+# v1.1.0
 
 using Markdown
 using InteractiveUtils
@@ -116,7 +116,7 @@ begin
     
     md"""
     Loaded baseline config from: `$(basename(snowcrab_toml_path))`
-    - Bathymetry Product: $(get(base_env, "bathymetry_source", "nwa_bathymetry")) (loaded via `Tethys.geoload`)
+    - Bathymetry Product: $(get(base_env, "bathymetry_source", "nwa_bathymetry")) (loaded via `Tethys.load_dataset`)
     - Default Grid: $(base_sim["grid_nx"]) × $(base_sim["grid_ny"]) cells
     - Default Carrying Capacity $K$: $(base_env["benthic_carrying_capacity"]) organisms
     - Temperature Offset: $(t_offset_val) °C (Seasonal Multiplier: $(t_mult_val)×)
@@ -568,7 +568,9 @@ sim_results = begin
     ]
     
     # 6. Execute simulation up to current interactive day or load cached instance
-    cache_file = normpath(joinpath(@__DIR__, "..", "scratch", "saved_ibm_run.jld2"))
+    cache_file = isdefined(TethysBio, :lakehouse_tethysbio_path) ?
+        lakehouse_tethysbio_path("saved_ibm_run.jld2") :
+        normpath(joinpath(@__DIR__, "..", "scratch", "saved_ibm_run.jld2"))
 
     agent_df, model_df = if run_model
         # Explicit user-triggered simulation execution: integrates population and overwrites store
@@ -585,22 +587,35 @@ sim_results = begin
         (res_a, res_m)
     else
         # Default behavior: load previously saved simulation store without re-running
-        if isfile(cache_file)
+        scratch_fallback = normpath(joinpath(@__DIR__, "..", "scratch", "saved_ibm_run.jld2"))
+        chosen_cache = isfile(cache_file) ? cache_file : (isfile(scratch_fallback) ? scratch_fallback : "")
+        if !isempty(chosen_cache)
             try
-                cached = JLD2.load(cache_file)
+                cached = JLD2.load(chosen_cache)
                 (cached["agent_df"], cached["model_df"])
             catch err
-                @warn "Failed loading cache $(cache_file), fallback to initial model state: $err"
+                @warn "Failed loading cache $(chosen_cache), fallback to initial model state: $err"
                 run_simulation(model, 0; adata = adata, mdata = mdata)
             end
         else
-            @info "No saved lakehouse cache found at $(cache_file). Running initial step..."
+            @info "No saved lakehouse cache found. Running initial step..."
             run_simulation(model, 0; adata = adata, mdata = mdata)
         end
     end
     
     # 7. Extract annual demographic and fishery production table
     annual_df = extract_annual_production(agent_df, model_df)
+    if run_model && effective_days > 0
+        try
+            save_simulation_results(
+                lakehouse_tethysbio_path("simulation_results"),
+                agent_df,
+                model_df
+            )
+        catch err
+            @warn "Failed saving lakehouse annual production parquet: $err"
+        end
+    end
     
     (
         model = model,

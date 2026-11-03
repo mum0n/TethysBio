@@ -14,6 +14,8 @@ include("test_fixtures.jl")
         @test cfg_def[:temp_multiplier] == 1.0
         @test cfg_def[:legal_size_male] == 95.0
         @test cfg_def[:benthic_carrying_capacity] == 12000.0
+        @test cfg_def[:save_path] == "simulation_results"
+        @test !haskey(cfg_def, :save_file)
 
         # 2. Section routing is derived from the parameter structs
         section_map = config_section_map()
@@ -45,6 +47,7 @@ include("test_fixtures.jl")
         @test loaded_cfg[:grid] == (100, 100)
         @test loaded_cfg[:temp_offset] == 0.0
         @test loaded_cfg[:temp_multiplier] == 1.0
+        @test loaded_cfg[:save_path] == "simulation_results"
         @test loaded_cfg[:mating_search_radius] == 5
         @test loaded_cfg[:mating_energy_cost] == 8.0
         @test loaded_cfg[:aggregate_baseline_hazards] ==
@@ -1267,6 +1270,16 @@ include("test_fixtures.jl")
         # A flag that is not a declared parameter name is not silently accepted.
         @test !haskey(parse_cli_args(String["--species-config=x.toml"]), :species_config)
         @test parse_cli_args(String[]) isa Dict{Symbol, Any}
+
+        # Interface modes: notebook, html, gui
+        args_nb = parse_cli_args(String["--notebook"])
+        @test get(args_nb, :notebook, false) == true
+
+        args_html = parse_cli_args(String["--html"])
+        @test get(args_html, :html, false) == true
+
+        args_gui = parse_cli_args(String["--gui"])
+        @test get(args_gui, :gui, false) == true
     end
     @testset "Seeding states the distribution, one stage per entry" begin
         # The initial age and sex structure is stated in three vectors rather than

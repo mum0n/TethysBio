@@ -521,8 +521,8 @@ fishing_season_end        = 150.0  # Last day of the fishing season
 # [output] — sampling, serialization and figures
 # -----------------------------------------------------------------------------
 [output]
-save           = true                      # Write the annual indicator CSV
-save_file      = "simulation_results.csv"  # Output filename for that CSV
+save           = true                      # Write annual indicators to the Tethys lakehouse
+save_path      = "simulation_results"      # Collection path under lakehouse/TethysBio
 # Day of year at which each annual snapshot is taken (~1 September).
 snapshot_day   = 274.0
 # Sampling interval in days. 365.0 means one snapshot per year at `snapshot_day`;
@@ -530,7 +530,7 @@ snapshot_day   = 274.0
 # becomes a genuine day of year for each sample.
 frequency_days = 365.0
 plot           = false                      # Export the diagnostic figure set
-output_dir     = "outputs"                 # Where figures and data are written
+output_dir     = "outputs"                 # Where figures and animation are written
 animate        = false                      # Record an mp4 animation
 animation_file = "organism_animation.mp4"
 anim_frames    = 120     # Frames in the animation

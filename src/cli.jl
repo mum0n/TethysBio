@@ -228,6 +228,10 @@ function parse_cli_args(args::AbstractVector)
         elseif k_str in ("gui", "gui_simple", "gui-simple")
             config[:gui] = coerce_config_value(Bool, v_str)
             config[:gui_simple] = config[:gui]
+        elseif k_str == "notebook"
+            config[:notebook] = coerce_config_value(Bool, v_str)
+        elseif k_str == "html"
+            config[:html] = coerce_config_value(Bool, v_str)
         elseif k_str in ("temp_base", "temp_amplitude")
             # Legacy aliases for the thermal parameters.
             alias = k_str == "temp_base" ? :temp_offset : :temp_multiplier
@@ -303,7 +307,9 @@ alternative spellings: an unrecognized name is reported and ignored.
 
 Flags:
   --config=<Path>            Configuration file (TOML format)
-  --gui=<Bool>               Launch the interactive real-time GLMakie dashboard
+  --gui=<Bool>               Launch the interactive real-time scrollable GLMakie dashboard
+  --notebook=<Bool>          Launch the reactive Pluto.jl notebook server
+  --html=<Bool>              Launch the browser web dashboard (WGLMakie / Bonito)
   --help                     Show this help message
 
 Common parameters (see configs/default.toml for the full list):
@@ -321,8 +327,8 @@ Common parameters (see configs/default.toml for the full list):
                                            not per cell (default: 12000.0)
   --frequency_days=<Float>                 Output sampling interval (default: 365.0)
   --snapshot_day=<Float>                   Annual survey snapshot day of year (default: 274.0)
-  --save=<Bool>                            Write annual indicators to CSV (default: true)
-  --save_file=<Path>                       Output CSV filename
+  --save=<Bool>                            Write annual indicators to lakehouse (default: true)
+  --save_path=<Path>                       Lakehouse collection path (default: simulation_results)
   --plot=<Bool>                            Export diagnostic figures (default: false)
   --animate=<Bool>                         Record an animation (default: false)
   --animation_file=<Path>                  Animation output filename
@@ -364,8 +370,15 @@ function print_simulation_report(
                  (hasproperty(summary, :total_organisms) ? summary.total_organisms : 0)
     @printf(io, " Final Living Organisms : %d organisms\n", total_orgs)
 
-    survival_pct = (init_agents > 0) ? (total_orgs / init_agents * 100.0) : 0.0
-    @printf(io, " Net Population Change : %+.1f%%\n", (survival_pct - 100.0))
+
+    net_change_str = if init_agents > 0
+        @sprintf("%+.1f%%", (total_orgs / init_agents * 100.0) - 100.0)
+    elseif total_orgs == 0
+        "+0.0%"
+    else
+        @sprintf("+%d organisms (individuated)", total_orgs)
+    end
+    @printf(io, " Net Population Change : %s\n", net_change_str)
     println(io, "-"^80)
 
     println(io, " [Key Output Indicators]")
@@ -488,6 +501,29 @@ function run_ibm_cli(args::AbstractVector = ARGS)::Int
         return 0
     end
 
+    if get(config, :notebook, false)
+        println("="^80)
+        println(" Launching TethysBio Reactive Pluto.jl Notebook Server...")
+        println("="^80)
+        nb_path = normpath(joinpath(_PROJECT_ROOT, "notebooks", "TethysBioNotes.jl"))
+        println(" Notebook file: ", nb_path)
+        try
+            if isdefined(Main, :Pluto)
+                Main.Pluto.run(notebook = nb_path)
+            else
+                @eval import Pluto
+                Pluto.run(notebook = nb_path)
+            end
+        catch err
+            @warn "Pluto server execution terminated" exception = err
+        end
+        return 0
+    end
+
+    if get(config, :html, false)
+        return launch_web_dashboard(config)
+    end
+
     if get(config, :gui, false) || get(config, :gui_simple, false)
         println("="^80)
         println(" Launching Organism IBM GUI Dashboard (GLMakie)...")
@@ -574,12 +610,15 @@ function run_ibm_cli(args::AbstractVector = ARGS)::Int
     end
 
     if config[:save] && !isempty(ann_df)
-        mkpath(config[:output_dir])
-        save_path = isabspath(config[:save_file]) ?
-            config[:save_file] : joinpath(config[:output_dir], config[:save_file])
-        println(" Saving annual simulation results to: $(save_path)")
-        write_dataframe_csv(save_path, ann_df)
-        println(" Simulation results saved successfully.")
+        save_path = _write_annual_production_collection(
+            config[:save_path],
+            ann_df;
+            dt_year = 365.0,
+            frequency_days = Float64(config[:frequency_days]),
+            snapshot_day = Float64(config[:snapshot_day]),
+            meta = Dict(:seed => config[:seed], :days => config[:days])
+        )
+        println(" Saved annual simulation results to lakehouse collection: $(save_path)")
     end
 
     if config[:plot]

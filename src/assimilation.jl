@@ -122,7 +122,7 @@ Convert the published products this configuration names into the Tethys store, s
 anything already there.
 
 Two fetches, using exactly the calls a simulation makes — `fetch_erddap_bathymetry` and
-`fetch_boundary_hydrography_geodata` — so the assimilation and the ingestion cannot drift
+`fetch_boundary_hydrography` — so the assimilation and the ingestion cannot drift
 apart into two different ways of reading one product. The notebook's step is this function;
 the simulation's ingestion is the same functions called from the same directory.
 
@@ -158,18 +158,18 @@ function assimilate_environmental_inputs(env_params::EnvironmentParams;
         if c_idx !== nothing
             src = central_candidates[c_idx]
             verbose && println("  [assimilate] bathymetry: loading from $(src) via Tethys -> bathymetry.zarr")
-            ds_bathy = Tethys.geoload(src)
-            Tethys.geosave(bathy_target, ds_bathy; backend = :zarr)
+            ds_bathy = Tethys.load_dataset(src)
+            Tethys.save_dataset(bathy_target, ds_bathy; backend = :zarr)
             push!(written, "bathymetry")
         else
-            verbose && println("  [assimilate] bathymetry: no local store found; fetching via Tethys.geoget")
-            ds_bathy = Tethys.geoget(
+            verbose && println("  [assimilate] bathymetry: no local store found; fetching via Tethys.load_dataset")
+            ds_bathy = Tethys.load_dataset(
                 "erddap://ETOPO_2022_v1_15s";
                 cache_dir = store,
                 bounds = (lon_range, lat_range),
                 verbose = verbose
             )
-            Tethys.geosave(bathy_target, ds_bathy; backend = :zarr)
+            Tethys.save_dataset(bathy_target, ds_bathy; backend = :zarr)
             push!(written, "bathymetry")
         end
     else
@@ -198,17 +198,17 @@ function assimilate_environmental_inputs(env_params::EnvironmentParams;
             src_h = central_hydro[h_idx]
             verbose && println("  [assimilate] hydrography: loading from $(src_h) via Tethys -> $(hydro_target)")
             ds_hydro = occursin(".nc", src_h) ?
-                Tethys.geoload(src_h; backend = :ncdatasets) :
-                Tethys.geoload(src_h)
-            Tethys.geosave(hydro_target, ds_hydro; backend = :zarr)
+                Tethys.load_dataset(src_h; backend = :ncdatasets) :
+                Tethys.load_dataset(src_h)
+            Tethys.save_dataset(hydro_target, ds_hydro; backend = :zarr)
             push!(written, "hydrography")
             hydro_product = "glorys12v1"
             hydro_domain = ((-71.0, -53.0), (40.0, 48.5))
         else
-            verbose && println("  [assimilate] hydrography: fetching $(temp_src) via Tethys.geoget")
+            verbose && println("  [assimilate] hydrography: fetching $(temp_src) via Tethys.load_dataset")
             scheme = temp_src === :woa23 ? "woa23://" : "copernicus://"
             try
-                ds_hydro = Tethys.geoget(
+                ds_hydro = Tethys.load_dataset(
                     scheme;
                     cache_dir = store,
                     bounds = (lon_range, lat_range),
@@ -216,7 +216,7 @@ function assimilate_environmental_inputs(env_params::EnvironmentParams;
                     verbose = verbose
                 )
                 if ds_hydro isa GeoDataset
-                    Tethys.geosave(hydro_target, ds_hydro; backend = :zarr)
+                    Tethys.save_dataset(hydro_target, ds_hydro; backend = :zarr)
                     push!(written, "hydrography")
                 end
             catch err
@@ -263,7 +263,7 @@ no knowledge of where any product was published.
 """
 function read_assimilated_environment(env_params::EnvironmentParams)
     # `build_geodata_environmental_fields` already falls back to the providers
-    # (geoget) when an assimilated artefact is absent, so a missing store is not
+    # (`load_dataset`) when an assimilated artefact is absent, so a missing store is not
     # fatal: it is fetched on demand. The strict presence check that used to
     # live here made the reader fail immediately after `assimilate_environmental_inputs`
     # for hydrography, because the two disagreed on the store's layout (see C2).

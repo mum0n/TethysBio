@@ -62,7 +62,6 @@ stage_size_lower_bound(behavior::SpeciesBehavior, stage::AbstractArray, sex) =
     get_stage_size(behavior::SpeciesBehavior, stage::Real, sex; type=:mid, rng=Random.default_rng())
 
 Compute or sample carapace size (mm) for a given developmental `stage` and `sex`.
-Alias: `stage_size`.
 
 # Options for `type`
 - `:lb`: Lower bound for the stage.
@@ -111,7 +110,6 @@ function get_stage_size(
     end
 end
 
-const stage_size = get_stage_size
 
 """
     growth_increment(behavior::SpeciesBehavior, log_size::Real; kwargs...)
@@ -1277,7 +1275,7 @@ function step_aggregate_groups!(
                 # branch should have claimed, and it never became an agent.
                 next_sz = (next_stage < benthic_anchor) ?
                           stage_size_lower_bound(behavior, Float64(next_stage), :male) :
-                          stage_size(behavior, next_stage, :male;
+                          get_stage_size(behavior, next_stage, :male;
                                      type = :random, rng = abmrng(model), params = params)
                 next_wt = calculate_mass(behavior, next_sz, :male; mat = 0, stochastic = true, rng = abmrng(model))
                 new_grp = AggregateGroup(
@@ -1308,7 +1306,7 @@ function step_aggregate_groups!(
                     rec_sex = (rand(abmrng(model)) < params.leslie.male_split_fraction) ? male :
                           female
                     mean_log_sz = log(
-                        stage_size(
+                        get_stage_size(
                             behavior, ind_stage, rec_sex;
                             type = :random, rng = abmrng(model), params = params
                         )

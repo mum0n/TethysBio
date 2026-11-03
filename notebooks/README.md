@@ -1,65 +1,39 @@
-# Notebooks
+# Pluto Research Notebooks
 
-A Pluto notebook for the individual-based model: assimilate the environmental store, load the
-configuration, inspect the fields the animals live on, run the IBM, and read its results back.
+The `TethysBioNotes.jl` Pluto notebook provides an interactive environment for configuring, running, and analyzing the individual-based model across spatial domains in the Northwest Atlantic (such as the Scotian Shelf and Laurentian Channel). The notebook documents biological assumptions, environmental inputs, allometric relationships, and assessment outputs.
 
-| Notebook | Domain | Species | Inputs |
+| Notebook | Spatial Domain | Calibrated Species | Data Sources |
 |---|---|---|---|
-| [`TethysBioNotes.jl`](TethysBioNotes.jl) | a configurable Scotian Shelf / Laurentian Channel window centered on a chosen point | snow crab | config file + interactive steering; environmental store via `Tethys.lakehouse_dir` |
+| [`TethysBioNotes.jl`](TethysBioNotes.jl) | Configurable Scotian Shelf / Laurentian Channel window | Snow crab (*Chionoecetes opilio*) | TOML configuration files, interactive controls, and lakehouse store via `Tethys.lakehouse_dir` |
 
-A **Pluto** notebook: a `.jl` file in Pluto's own format, with `md"""..."""` cells between the
-code. It documents the run as it performs it — what each option means, which assumptions the
-model bakes in, and where each biological relationship comes from.
+## Functional Capabilities
 
-## What it does
+The notebook organizes the end-to-end simulation workflow into five integrated stages:
 
-1. **Configuration & steering** — loads `configs/snowcrab.toml` through `load_ibm_configuration`
-   and layers reactive widgets on top: domain center (an AOI picker), environmental offsets and
-   multipliers, fishery season and rate, no-take proportion, process toggles, and an interactive
-   initial stage-abundance distribution that feeds the `initial_*_cohort` configuration.
-2. **Model execution** — constructs `IBMParameters` from the merged configuration, calls
-   `initialize_model` with an AOI-derived bathymetric depth map, and drives `run_simulation`
-   across a multi-year horizon. By default, the notebook sets `run_model = false` and loads
-   previously computed results from `../scratch/saved_ibm_run.jld2` to protect existing runs from
-   accidental overwrites; setting `run_model = true` explicitly triggers re-integration and updates the store.
-3. **Dashboards** — spatial habitat/organism map, environmental distributions, stage structure,
-   size-frequency densities by sex and maturity, maturity ogives, abundance trajectories,
-   biomass/catch panels, and stock–recruitment scatter.
-4. **Macro-ecology** — Schaefer surplus production, Deriso–Schnute delay-difference, and
-   generalized Leslie/Lefkovitch fits to the annual series (`fit_population_dynamics`,
-   `fit_generalized_leslie_model`, `compare_macro_models`), with a three-way comparison panel.
-5. **Calibration** — `evaluate_population_criteria` scored against five biological criteria
-   (persistence, bounds, size-structure stability, maturity-ogive fidelity, growth fidelity).
+Configuration and steering routines load `configs/snowcrab.toml` through `load_ibm_configuration`, layering reactive widgets for spatial domain selection, environmental temperature offsets and multipliers, fishery open seasons, spatial closure proportions, biological process toggles, and initial stage-abundance cohort distributions.
 
-## Running it
+Model execution routines construct an `IBMParameters` instance from the merged configuration, initialize the lattice with bathymetry queried from the environmental store, and advance `run_simulation` over multi-annual horizons. By default, the notebook sets `run_model = false` and loads pre-computed results from local storage to prevent unintentional re-integration, while setting `run_model = true` triggers active simulation and updates results.
 
-Pluto is deliberately **not** a dependency of this package: a notebook is how you look at the
-work, not something the run needs. Launched from the package directory, the first code cell
-activates the parent project (`Pkg.activate(joinpath(@__DIR__, ".."))`), so the notebook is
-pinned to this package's environment:
+Diagnostic dashboards render spatial organism and habitat suitability distributions, bottom temperature fields, stage structures, sex- and maturity-stratified size frequencies, logistic maturity ogives, multi-annual biomass trajectories, commercial yield time series, and stock-recruitment relationships.
 
-```
-julia --project=. -e 'using Pluto; Pluto.run()'
+Macro-ecological population analysis fits surplus production models (Schaefer), delay-difference models (Deriso-Schnute), and stage-transition projection matrices (generalized Leslie and Lefkovitch formulations) to annual simulation series, summarizing comparative performance through coefficient of determination ($R^2$), root mean square error (RMSE), and Akaike Information Criterion (AIC) statistics.
+
+Calibration assessment evaluates simulation trajectories against five biological criteria: population persistence, demographic bounds, size-structure stability, maturity-ogive fidelity, and growth-increment accuracy.
+
+## Execution
+
+Pluto is included as a project dependency. The notebook server can be launched directly from the package root:
+
+```powershell
+julia --project=. -e "using Pluto; Pluto.run()"
 ```
 
-Open `TethysBioNotes.jl` from the notebook list. Relative paths (`configs/snowcrab.toml`,
-`../scratch/saved_ibm_run.jld2`) resolve against the notebook's location, and the environmental
-store resolves through `Tethys.lakehouse_dir("TethysBio")`.
+Upon launching, selecting `TethysBioNotes.jl` activates the parent project environment (`Pkg.activate`). Relative paths resolve against the notebook directory, and environmental spatial datasets resolve through `Tethys.lakehouse_dir("TethysBio")`.
 
-For a no-browser smoke run — verify every cell executes cleanly — there is a headless runner
-that drives Pluto's session API directly:
+Headless execution can be evaluated through Pluto's session API:
 
-```
-julia --project=@v1.13 scratch/run_notebook.jl
+```powershell
+julia --project=. scratch/run_notebook.jl
 ```
 
-It opens the notebook with `run_notebook_on_load = true`, prints one line per cell (cell
-number, output MIME type, first line of code) and flags any cell whose output is an error,
-a parse failure, or a stacktrace. Note this runs the notebook for real: with an empty
-environmental store the first ingesting run may download published data products.
-
-## Not Jupyter
-
-This package uses Pluto only. Its notebooks are reactive, so re-running the configuration cell
-re-derives everything downstream of it, and the cells below a plot can be re-run on their own
-while you inspect what they returned.
+The script evaluates each cell sequentially, reporting completion status and verifying execution without requiring a graphical browser interface. Because Pluto notebooks maintain reactive dependency graphs, updating upstream configuration cells automatically propagates state changes throughout downstream simulation and visualization blocks.

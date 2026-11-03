@@ -2,14 +2,14 @@
 Post-hoc macro-ecological population dynamic model fitting CLI.
 
 Fits discrete-time Schaefer logistic surplus production models and
-Deriso-Schnute delay-difference models to simulation results (from a specified file),
+Deriso-Schnute delay-difference models to simulation results (from a lakehouse collection),
 evaluating both the whole population and the fishable component (legal adult males).
 
 Usage:
     julia --project=. scripts/fit_macro_models.jl [options]
 
 Options:
-    --file <path>        Path to simulation results (.csv or .jls) [REQUIRED]
+    --file <path>        TethysBio lakehouse collection path [REQUIRED]
     --lag <Int>          Delay-difference recruitment lag in years (default: 1)
     --retro              Run retrospective pattern analysis and compute Mohn's rho
     --peels <Int>        Number of retrospective peels for reanalysis (default: 5)
@@ -106,7 +106,7 @@ function display_help()
     println("    julia --project=. scripts/fit_macro_models.jl --file=<path> [OPTIONS]")
     println()
     println("Options:")
-    println("    --file=<path>        Path to simulation output (.csv or .jls) [REQUIRED]")
+    println("    --file=<path>        TethysBio lakehouse collection path [REQUIRED]")
     println("    --lag=<Int>          Delay-difference recruitment lag in years (default: 1)")
     println("    --retro              Perform retrospective analysis & Mohn's rho")
     println("    --peels=<Int>        Number of retrospective peels (default: 5)")
@@ -129,18 +129,20 @@ function main()
         return 0
     end
 
-    input_file = config[:file]
-    if !isfile(input_file)
-        println("\n[Error] Specified simulation results file not found: $(input_file)")
+    input_path = config[:file]
+    annual_df = try
+        load_simulation_results(input_path)
+    catch err
+        println("\n[Error] Could not load simulation results from $(input_path): $(sprint(showerror, err))")
         return 1
     end
 
     println("="^75)
-    println(" Loading simulation results from: $(input_file)")
+    println(" Loading simulation results from lakehouse collection: $(input_path)")
     println(" Fitting Schaefer Logistic and Delay-Difference models (lag = $(config[:lag]) yr)...")
     println("="^75)
 
-    macro_fits = fit_population_dynamics(input_file; lag = config[:lag])
+    macro_fits = fit_population_dynamics(annual_df; lag = config[:lag])
     report = summarize_population_dynamics(macro_fits)
     println(report)
 
@@ -159,7 +161,7 @@ function main()
         println("="^75)
         try
             retro_res = retrospective_analysis(
-                input_file;
+                annual_df;
                 n_peels = config[:peels],
                 lag = config[:lag]
             )
@@ -183,7 +185,7 @@ function main()
         println(" Fitting Generalized Leslie Stage-Structured Transition Matrix Model...")
         println("="^75)
         try
-            stage_mat, catch_mat, yrs = extract_annual_stage_matrix(input_file)
+            stage_mat, catch_mat, yrs = extract_annual_stage_matrix(annual_df)
             leslie_fit = fit_generalized_leslie_model(stage_mat, catch_mat; years = yrs)
             leslie_report = summarize_leslie_model(leslie_fit)
             println(leslie_report)
@@ -199,7 +201,7 @@ function main()
             println("\n" * "="^75)
             println(" Conducting Three-Way Macro Model Comparison (Fishable Stock)...")
             println("="^75)
-            macro_comp = compare_macro_models(input_file, leslie_fit; lag = config[:lag])
+            macro_comp = compare_macro_models(annual_df, leslie_fit; lag = config[:lag])
             println(summarize_macro_comparison(macro_comp))
 
             if config[:plot]

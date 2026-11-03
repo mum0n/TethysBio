@@ -10,4 +10,4 @@ using TOML
 const PROJECT_ROOT = normpath(joinpath(@__DIR__, ".."))
 projectdir(args...) = normpath(joinpath(PROJECT_ROOT, args...))
 using TethysBio
-const TethysBio = TethysBio
+

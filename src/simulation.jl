@@ -108,9 +108,10 @@ function default_ibm_configuration()
     # the struct's `grid_nx`/`grid_ny` fields.
     config[:grid] = (config[:grid_nx], config[:grid_ny])
 
-    # Path-valued keys are resolved relative to the project at write time.
+    # Result collections resolve relative to the TethysBio lakehouse namespace;
+    # local plots and animations remain under `output_dir`.
     config[:output_dir] = "outputs"
-    config[:save_file] = "simulation_results.csv"
+    config[:save_path] = "simulation_results"
     config[:animation_file] = "organism_animation.mp4"
 
     # Default n_agents is the sum of the initial sex cohort vectors.
@@ -184,7 +185,7 @@ runtime_config_keys() = Set{Symbol}([
     :n_agents,
     :grid,
     :output_dir,
-    :save_file,
+    :save_path,
     :animation_file,
     :log_file,
     :csv_prefix,
@@ -212,7 +213,7 @@ it is recorded on the config dict as `config_file`, never as `config`. A switch
 like that must not be reported as an unrecognized parameter when the generic
 branch encounters it, and it must not be accepted as a TOML key either.
 """
-cli_switch_keys() = Set{Symbol}([:config])
+cli_switch_keys() = Set{Symbol}([:config, :notebook, :html])
 
 """
     known_config_keys() → Set{Symbol}
@@ -684,11 +685,11 @@ fields using real physical datasets accessed through `Tethys`.
    Discretizes the spatial domain `(domain_lon, domain_lat)` into regular `nx` by `ny`
    geographic coordinates.
 2. Seabed Bathymetry:
-   If `depth_map` is not provided, loads bathymetric datasets via `Tethys.geoload`
+   If `depth_map` is not provided, loads bathymetric datasets via `Tethys.load_dataset`
    and builds continuous interpolator `Tethys.get_bathymetry_interpolator`.
    Depth is extracted as `max(0.0, -elevation)`.
 3. Seabed Bottom Temperature:
-   Queries climatological hydrography via `Tethys.geoload`
+   Queries climatological hydrography via `Tethys.load_dataset`
    (e.g., from Zarr or NetCDF) and samples temperature at seabed depth `z`.
 4. Habitat Suitability Index (HSI):
    Evaluates `calculate_habitat_suitability(temperature, depth)` across the grid.
@@ -740,17 +741,17 @@ function build_geodata_environmental_fields(
         bathy_ds = if found_idx !== nothing
             candidate_file = candidate_paths[found_idx]
             occursin(".nc", candidate_file) ?
-                Tethys.geoload(candidate_file; backend = :ncdatasets) :
-                Tethys.geoload(candidate_file)
+                Tethys.load_dataset(candidate_file; backend = :ncdatasets) :
+                Tethys.load_dataset(candidate_file)
         elseif is_nwa
             # Direct lakehouse fetch/load for nwa_bathymetry
-            Tethys.geoget(
+            Tethys.load_dataset(
                 "nwa_bathymetry";
                 cache_dir = TethysBio.environmental_store_dir(env_params),
                 bounds = (lon_range, lat_range)
             )
         else
-            Tethys.geoget(
+            Tethys.load_dataset(
                 "erddap://ETOPO_2022_v1_15s";
                 cache_dir = TethysBio.environmental_store_dir(env_params),
                 bounds = (lon_range, lat_range)
@@ -787,11 +788,11 @@ function build_geodata_environmental_fields(
     hydro_ds = if h_idx !== nothing
         hydro_path = hydro_candidates[h_idx]
         occursin(".nc", hydro_path) ?
-            Tethys.geoload(hydro_path; backend = :ncdatasets) :
-            Tethys.geoload(hydro_path)
+            Tethys.load_dataset(hydro_path; backend = :ncdatasets) :
+            Tethys.load_dataset(hydro_path)
     else
         scheme = Symbol(env_params.temperature_source) === :woa23 ? "woa23://" : "copernicus://"
-        Tethys.geoget(
+        Tethys.load_dataset(
             scheme;
             cache_dir = store_dir,
             bounds = (lon_range, lat_range),
@@ -1148,6 +1149,7 @@ function initialize_model(;
     grid_nx = grid[1]
     no_take_prop = clamp(params.fishery.no_take_proportion, 0.0, 1.0)
     properties[:no_take_line] = floor(Int, grid_nx * no_take_prop)
+    properties[:exclusion_boxes] = ExclusionBox[]
 
     # Valid marine habitat cells for benthic organisms (strictly non-land: depth >= 20.0 and hsi > 0)
     depth_min_bound = 20.0
@@ -1189,7 +1191,7 @@ function initialize_model(;
             sz = (is_first) ? org_params.egg_size_mm :
                  ((stg < Int(params.species.benthic_anchor_stage)) ?
                   stage_size_lower_bound(behavior, Float64(stg), :male) :
-                  stage_size(behavior, stg, :male; type = :random, rng = rng, params = params))
+                  get_stage_size(behavior, stg, :male; type = :random, rng = rng, params = params))
             wt = (is_first) ? org_params.egg_mass_g :
                  calculate_mass(behavior, sz, :male; mat = 0, stochastic = true, rng = rng)
             grp = AggregateGroup(
@@ -1263,7 +1265,7 @@ function initialize_model(;
     end
 
     function seed_one(stg::Int, sex, position)
-        sz = stage_size(behavior, stg, sex; type = :random, rng = rng, params = params)
+        sz = get_stage_size(behavior, stg, sex; type = :random, rng = rng, params = params)
         age_days = (stg - sim_params.initial_age_first_stage) *
                    sim_params.initial_age_days_per_stage +
                    rand(rng) * sim_params.initial_age_jitter_days
@@ -1639,7 +1641,9 @@ function agent_step!(org::Organism, model)
     # Organisms in the leftmost `no_take_proportion` of grid columns are in a
     # no-take zone and are never fished; the partition line (last protected cell
     # index) is stored in model.properties[:no_take_line] by `initialize_model`.
-    if in_fishing_season && org.pos[1] > get(abmproperties(model), :no_take_line, 0)
+    active_boxes = get(abmproperties(model), :exclusion_boxes, ExclusionBox[])
+    in_exclusion = !isempty(active_boxes) && is_in_exclusion_zones(org.pos[1], org.pos[2], active_boxes)
+    if in_fishing_season && org.pos[1] > get(abmproperties(model), :no_take_line, 0) && !in_exclusion
         legal_size = params.fishery.legal_size_male
         if is_legal_male(org, legal_size, params.organism.adult_size_threshold)
             # Legality is checked before the draw, not after. It used to consume one
@@ -1960,6 +1964,79 @@ function default_agent_observations(params::IBMParameters)
         push!(obs, (named_predicate(is_stage, Symbol("stage_$(st)"), st), count))
     end
     return obs
+end
+
+"""
+    prototype_organism(model)
+
+Construct a representative `Organism` instance for data collection schema
+introspection.
+
+# Arguments
+- `model`: Simulation model containing environment properties and parameters.
+
+# Returns
+- `Organism`: Fully populated individual prototype organism.
+"""
+function prototype_organism(model)
+    beh = hasproperty(model, :species_behavior) ?
+        model.species_behavior : default_species_behavior()
+    return Organism(
+        1, (1, 1), 1, female, beh, 0.0, 1.0, 0.01, 1.0, 0.0, 0.0, false, 0, 0.0, 0,
+        false
+    )
+end
+
+function Agents.init_agent_dataframe(
+    model::Agents.StandardABM{<:Any, Organism},
+    properties::Vector{<:Tuple}
+)
+    headers = Vector{String}(undef, 1 + length(properties))
+    types = Vector{Vector}(undef, 1 + length(properties))
+    headers[1] = "time"
+    types[1] = model isa EventQueueABM ? Float64[] : Int[]
+
+    agent_source = nagents(model) > 0 ?
+        Iterators.take(allagents(model), 1) :
+        (prototype_organism(model),)
+
+    for (i, property) in enumerate(properties)
+        k, agg = property
+        headers[i + 1] = Agents.dataname(property)
+        current_type = typeof(agg(Agents.get_data(a, k, identity) for a in agent_source))
+        types[i + 1] = current_type[]
+    end
+    return DataFrame(types, headers)
+end
+
+function Agents.init_agent_dataframe(
+    model::Agents.StandardABM{<:Any, Organism},
+    properties::AbstractArray
+)
+    A = agenttype(model)
+    utypes = Agents.union_types(A)
+    std_headers = length(utypes) > 1 ? 3 : 2
+
+    headers = Vector{String}(undef, std_headers + length(properties))
+    headers[1] = "time"
+    headers[2] = "id"
+    for i in 1:length(properties)
+        headers[i + std_headers] = Agents.dataname(properties[i])
+    end
+
+    types = Vector{Vector}(undef, std_headers + length(properties))
+    types[1] = model isa EventQueueABM ? Float64[] : Int[]
+    types[2] = Int[]
+
+    sample_agent = nagents(model) > 0 ?
+        first(allagents(model)) :
+        prototype_organism(model)
+
+    for (i, k) in enumerate(properties)
+        current_type = typeof(Agents.get_data(sample_agent, k, identity))
+        types[i + std_headers] = current_type[]
+    end
+    return DataFrame(types, headers)
 end
 
 """

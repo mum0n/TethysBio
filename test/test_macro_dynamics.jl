@@ -192,7 +192,8 @@ include("test_fixtures.jl")
             0.0, 0.0, true, 0, 0.0, 0
         )
         @test is_legal_male(org_legal, 95.0, 68.0) == true
-        @test is_legal(org_legal, 95.0, 68.0) == true
+        @test !isdefined(TethysBio, :is_legal)
+
         @test is_legal_male(org_sublegal, 95.0, 68.0) == false
         @test is_legal_male(org_female, 95.0, 68.0) == false
         # The thresholds are mandatory arguments, so a configured legal size is
@@ -245,8 +246,8 @@ include("test_fixtures.jl")
         @test dd_fit.R2 > 0.90
         @test dd_fit.s ≈ 0.82 atol = 0.10
 
-        # 6. File persistence and loading (.csv)
-        tmp_csv = joinpath(tempdir(), "test_ann_prod.csv")
+        # 6. Macro fitting consumes the same annual DataFrame returned by the
+        #    Parquet persistence layer (round-trip is covered in simulation tests).
         ann_df = DataFrame(
             sample_index = collect(1:10),
             time = Float64.(collect(1:10) .* 365.0),
@@ -257,14 +258,9 @@ include("test_fixtures.jl")
             surplus_production_total = zeros(10),
             surplus_production_legal = zeros(10)
         )
-        write_dataframe_csv(tmp_csv, ann_df)
-        @test isfile(tmp_csv)
-        loaded_csv = read_dataframe_csv(tmp_csv)
-        @test nrow(loaded_csv) == 10
-        @test loaded_csv.total_numbers[1] ≈ 120.0
 
-        # Full fit_population_dynamics on loaded data
-        macro_fits = fit_population_dynamics(loaded_csv; lag = 1)
+        # Full fit_population_dynamics on annual data
+        macro_fits = fit_population_dynamics(ann_df; lag = 1)
         @test macro_fits.whole_population.schaefer.is_fitted == true
         @test macro_fits.fishable_stock.schaefer.is_fitted == true
 
@@ -285,7 +281,7 @@ include("test_fixtures.jl")
         @test mohn_rho(Float64[], Float64[]) == 0.0
         @test_throws ErrorException mohn_rho([1.0], [1.0, 2.0])
 
-        retro_res = retrospective_analysis(loaded_csv; n_peels = 4, model_type = :schaefer)
+        retro_res = retrospective_analysis(ann_df; n_peels = 4, model_type = :schaefer)
         @test retro_res.n_peels == 4
         @test length(retro_res.peel_indices) == 4
         @test retro_res.whole_population.mohn_rho isa Float64
@@ -303,7 +299,6 @@ include("test_fixtures.jl")
         p_retro = plot_retrospective_analysis(retro_res)
         @test p_retro isa Figure
 
-        rm(tmp_csv, force = true)
     end
 
     @testset "Generalized Leslie Matrix & Macro Model Comparison" begin

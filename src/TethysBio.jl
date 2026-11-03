@@ -18,6 +18,8 @@ const _PROJECT_ROOT = normpath(joinpath(@__DIR__, ".."))
 
 # Include submodules and components
 include("types.jl")
+include("dashboard_shared.jl")
+using .DashboardShared
 include("organism_dynamics.jl")
 include("species.jl")
 include("simulation.jl")
@@ -26,10 +28,10 @@ include("analysis.jl")
 include("visualization.jl")
 include("gui.jl")
 include("cli.jl")
+include("web_dashboard.jl")
+using .WebDashboard
 include("notebook_support.jl")
 
-# Backward compatibility alias
-const TethysBio = TethysBio
 
 # Export types and enums
 export LifeStage, Sex, zoea, megalopa, juvenile, adult, egg
@@ -43,14 +45,14 @@ export OrganismParams, ProcessToggles, SimulationParams, FisheryParams, OutputPa
 export AggregateGroup, AggregatePopulations
 export is_adult, is_adult_male, is_adult_female, is_ovigerous
 export is_mature_male, is_mature_female
-export is_legal_male, is_legal, fishery_active
+export is_legal_male, fishery_active
 export mass_if_mature_female, mass_if_mature_male, mass_if_legal_male
 export named_predicate, NamedPredicate
 export StageDefinition
 export LeslieMatrixFit, MacroModelComparison, EmpiricalBiologicalModel
 
 # Export biological relationships
-export llbm, llbf, get_stage_size, stage_size, stage_size_lower_bound
+export llbm, llbf, get_stage_size, stage_size_lower_bound
 export growth_increment, predict_postgrowth_size
 export growth_schedule, growth_simulate, maturity, fecundity, selectivity
 export sample_population, calculate_mass
@@ -93,9 +95,9 @@ export resolve_configuration_files
 export compute_empirical_ogive, summarize_population
 export maturity_ogive_residuals, maturity_ogive_mismatch, cumulative_maturity_curves
 export extract_stock_recruitment, fit_stock_recruitment, summarize_stock_recruitment
-export save_simulation_results, load_simulation_results, extract_annual_production
-export annual_production_targets, empty_annual_production, ANNUAL_PRODUCTION_SCHEMA
-export write_dataframe_csv, read_dataframe_csv
+export save_simulation_results, load_simulation_results, resolve_simulation_results_path
+export extract_annual_production, annual_production_targets, empty_annual_production
+export ANNUAL_PRODUCTION_SCHEMA
 export fit_schaefer, fit_delay_difference, fit_population_dynamics
 export summarize_population_dynamics
 export optimize_model, optimize_blocks, safe_objective, OBJECTIVE_PENALTY, safe_objective
@@ -115,14 +117,14 @@ export fmt_param
 export organism_color, organism_size, organism_marker, organism_heatarray
 export plot_abm_summary, animate_organism_simulation
 export plot_functional_relationships
-export launch_organism_gui, IBMGuiState, step_gui_simulation!
+export launch_organism_gui, close_gui!, IBMGuiState, step_gui_simulation!
 export create_empty_annual_data
 export COUNT_PLOT_FLOOR, log10_count, GUI_EARLY_STAGES
 export kde_density, SIZE_DENSITY_BANDWIDTH_MM, SEX_DENSITY_ALPHA
 export cohort_stage_label
 export rescan_config!, flatten_toml, config_diff, RESCAN_IMMUTABLE
 export calendar_month, CALENDAR_MONTH_END
-export parse_cli_args, run_ibm_cli, julia_main
+export parse_cli_args, run_ibm_cli, julia_main, launch_web_dashboard
 export print_simulation_report, print_save_step_outputs, generate_summary_plots
 export display_cli_help
 export Figure
@@ -131,6 +133,10 @@ export Figure
 export setup_spatial_panel!, setup_abundance_panel!, setup_stages_panel!
 export setup_size_density_panel!, setup_ogive_panel!, setup_macro_panel!
 export setup_stock_recruitment_panel!
+export ExclusionBox, is_in_exclusion_box, is_in_exclusion_zones
+export DEFAULT_STAGE_DISTRIBUTION, map_stage_distribution_to_cohorts
+export aoi_bottom_temperature, aoi_habitat_suitability, aoi_domain_bounds
+export export_scenario_toml, lakehouse_tethysbio_path, DashboardShared
 export aoi_coords_widget, steering_controls_widget, extract_ctrl_val
 export parameter_steering_sliders_widget, simulation_transport_widget
 export estimate_aoi_bathymetry

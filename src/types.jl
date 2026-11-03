@@ -242,8 +242,6 @@ is_legal_male(org::Organism, legal_size::Real, adult_size::Real) =
 
 is_stage(org::Organism, stage::Integer) = org.stage == stage
 
-is_legal(org::Organism, legal_size::Real, adult_size::Real) =
-    is_legal_male(org, legal_size, adult_size)
 
 mass_if_mature_female(org::Organism) = is_mature_female(org) ? org.mass : 0.0
 mass_if_mature_male(org::Organism) = is_mature_male(org) ? org.mass : 0.0
@@ -934,7 +932,7 @@ fishery_active(params::FisheryParams) = params.fishing_probability_daily > 0.0
 
 Base.@kwdef struct OutputParams
     save::Bool = true
-    save_file::String = "simulation_results.csv"
+    save_path::String = "simulation_results"
     snapshot_day::Float64 = 274.0
     frequency_days::Float64 = 365.0
     plot::Bool = false

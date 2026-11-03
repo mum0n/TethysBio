@@ -322,7 +322,8 @@ function setup_spatial_panel!(
     sizes,
     colors;
     colormap = :thermal,
-    colorrange = nothing
+    colorrange = nothing,
+    exclusion_lines = nothing
 )
     cr = if colorrange !== nothing
         colorrange
@@ -351,6 +352,9 @@ function setup_spatial_panel!(
         strokewidth = 0.5,
         strokecolor = :black
     )
+    if exclusion_lines !== nothing
+        linesegments!(ax, exclusion_lines; color = :crimson, linewidth = 2.5, linestyle = :dash)
+    end
     return hm
 end
 
@@ -445,7 +449,11 @@ function setup_macro_panel!(ax, ts_biomass, ts_catch, obs_pts, sch_pts, dd_pts, 
                             label_sch = "Schaefer Fit",
                             label_dd = "Delay-Diff Fit",
                             label_les = "Leslie Fit",
-                            label_catch = "Annual Catch")
+                            label_catch = "Annual Catch",
+                            baseline_biomass = nothing)
+    if baseline_biomass !== nothing
+        lines!(ax, baseline_biomass, label = "Unzoned Baseline", color = (:gray, 0.6), linewidth = 1.6, linestyle = :dot)
+    end
     lines!(ax, ts_biomass, label = "Legal Fishable Biomass", color = :purple, linewidth = 2.2)
     lines!(ax, ts_catch, label = label_catch, color = :darkorange, linewidth = 1.8, linestyle = :dash)
     scatter!(ax, obs_pts, color = :black, markersize = 9, label = label_obs)
@@ -788,8 +796,59 @@ Base.@kwdef mutable struct IBMGuiState
     snapshots::Dict{Int, Any}
     snapshot_labels::Observable{Vector{String}}
 
+    # Interactive AOI Hydrography & HSI Observables
+    aoi_lon::Observable{Float64} = Observable(-63.5)
+    aoi_lat::Observable{Float64} = Observable(44.5)
+    aoi_depth_str::Observable{String} = Observable("Depth: 150.0 m")
+    aoi_temp_str::Observable{String} = Observable("Temp: 3.50 °C")
+    aoi_hsi_str::Observable{String} = Observable("HSI: 0.8500")
+
+    # Spatial Exclusion (AABB) Marine Protected Areas
+    exclusion_boxes::Observable{Vector{ExclusionBox}} = Observable(ExclusionBox[])
+    is_drawing_exclusion::Observable{Bool} = Observable(false)
+    exclusion_draw_start::Observable{Union{Nothing, Point2f}} = Observable{Union{Nothing, Point2f}}(nothing)
+    obs_exclusion_lines::Observable{Vector{Point2f}} = Observable(Point2f[])
+    obs_exclusion_status::Observable{String} = Observable("No active exclusion zone")
+
+    # Interactive Initial Stage Distribution Editor
+    obs_stage_dist_init::Observable{Vector{Float64}} = Observable(copy(DEFAULT_STAGE_DISTRIBUTION))
+    obs_total_seed_str::Observable{String} = Observable("Total: " * string(round(Int, sum(DEFAULT_STAGE_DISTRIBUTION))))
+
+    # Marine Protected Area Contrast Overlay (Ghost baseline trajectory)
+    obs_baseline_biomass::Observable{Vector{Point2f}} = Observable(Point2f[])
+    obs_baseline_catch::Observable{Vector{Point2f}} = Observable(Point2f[])
+    has_baseline::Observable{Bool} = Observable(false)
+
+    # Multi-attribute calibration criteria text
+    calib_criteria_text::Observable{String} = Observable("Calibration Criteria: Initialized")
+
+    # Environmental distributions observables (depth, temp, hsi)
+    obs_env_depths::Observable{Vector{Point2f}} = Observable(Point2f[])
+    obs_env_temps::Observable{Vector{Point2f}} = Observable(Point2f[])
+    obs_env_hsi::Observable{Vector{Point2f}} = Observable(Point2f[])
+
+    # Annual summary table text
+    annual_table_text::Observable{String} = Observable("Annual Summary Table: Awaiting Simulation Steps")
+
+    # Lifecycle control
+    is_active::Observable{Bool} = Observable(true)
+
     # Asynchronous task handle
     sim_task::Union{Nothing, Task} = nothing
+end
+
+"""
+    close_gui!(state::IBMGuiState)
+
+Halt asynchronous background simulation loops and deactivate interactive observables.
+"""
+function close_gui!(state::IBMGuiState)
+    state.is_running[] = false
+    state.is_active[] = false
+    if state.sim_task !== nothing && !istaskdone(state.sim_task)
+        yield()
+    end
+    return nothing
 end
 
 # ------------------------------------------------------------------------------
@@ -1124,6 +1183,72 @@ function step_gui_simulation!(state::IBMGuiState, days::Float64)
         "   Month: ", month_n,
         "   Day: ", day_of_year,
         "   Duration: ", round(Int, curr_t), " d")
+
+    # Update environmental driver distributions
+    try
+        z_grid = get(abmproperties(model), :depth_map, nothing)
+        if z_grid !== nothing && !isempty(z_grid)
+            z_vals = Float64.(vec(z_grid))
+            z_norm = z_vals ./ max(1.0, maximum(z_vals))
+            t_vals = Float64.(vec(model.temperature_field)) ./ 10.0
+            hsi_grid = get(abmproperties(model), :habitat_quality_field, nothing)
+            h_vals = hsi_grid !== nothing ? Float64.(vec(hsi_grid)) : fill(0.5, length(z_vals))
+
+            grid_x = collect(0.0:0.02:1.0)
+            kd_z = kde_density(z_norm, grid_x; scale = :probability)
+            kd_t = kde_density(clamp.(t_vals, 0.0, 1.0), grid_x; scale = :probability)
+            kd_h = kde_density(clamp.(h_vals, 0.0, 1.0), grid_x; scale = :probability)
+
+            state.obs_env_depths[] = [Point2f(grid_x[i], kd_z[i]) for i in eachindex(grid_x)]
+            state.obs_env_temps[] = [Point2f(grid_x[i], kd_t[i]) for i in eachindex(grid_x)]
+            state.obs_env_hsi[] = [Point2f(grid_x[i], kd_h[i]) for i in eachindex(grid_x)]
+        end
+    catch
+    end
+
+    # Update Multi-Attribute Calibration Criteria Summary
+    try
+        n_cur = length(living)
+        n_min = 20
+        n_max = round(Int, params.environment.benthic_carrying_capacity * 1.5)
+        p_pass = n_cur >= n_min ? "PASS" : "FAIL"
+        b_pass = n_cur <= n_max ? "PASS" : "FAIL"
+        cw_m = isempty(living) ? 0.0 : mean(o.size for o in living)
+        crit_str = string(
+            "Criterion 1 (Persistence): ", n_cur, " living (min: ", n_min, ") -> [", p_pass, "]\n",
+            "Criterion 2 (Bounds):      ", n_cur, " living (max: ", n_max, ") -> [", b_pass, "]\n",
+            "Criterion 3 (Size Drift):  cw_mean = ", round(cw_m, digits = 1), " mm (adult: ", round(adult_sz, digits = 1), " mm)\n",
+            "Criterion 4 (Maturity):    n_mature_m = ", n_mal, ", n_mature_f = ", n_fem, "\n",
+            "Criterion 5 (Fishery):     legal_m = ", n_leg, ", landings = ", round(cum_catch, digits = 1), " kg"
+        )
+        state.calib_criteria_text[] = crit_str
+    catch
+    end
+
+    # Update Annual Table Text
+    try
+        ann = state.annual_data
+        if !isempty(ann) && nrow(ann) > 0
+            n_rows = nrow(ann)
+            start_r = max(1, n_rows - 5)
+            lines_tbl = ["Year | Total Biomass (kg) | Legal Biomass (kg) | Catch (kg) | Recruits | Spawners"]
+            push!(lines_tbl, "-----|--------------------|--------------------|------------|----------|---------")
+            for r in start_r:n_rows
+                row = ann[r, :]
+                tot_b = hasproperty(row, :total_biomass_kg) ? row.total_biomass_kg : 0.0
+                leg_b = hasproperty(row, :fishable_male_biomass_kg) ? row.fishable_male_biomass_kg : (hasproperty(row, :biomass_legal) ? row.biomass_legal : 0.0)
+                c_val = hasproperty(row, :catch_total) ? row.catch_total : (hasproperty(row, :cumulative_catch) ? row.cumulative_catch : 0.0)
+                rec = hasproperty(row, :recruits) ? row.recruits : 0.0
+                spaw = hasproperty(row, :mature_females) ? row.mature_females : 0.0
+                push!(lines_tbl, @sprintf("%4d | %18.1f | %18.1f | %10.1f | %8.0f | %8.0f",
+                                         row.year, tot_b, leg_b, c_val, rec, spaw))
+            end
+            state.annual_table_text[] = join(lines_tbl, "\n")
+        else
+            state.annual_table_text[] = "Annual Summary Table: Awaiting Year 1 snapshot (day 274)"
+        end
+    catch
+    end
 
     return nothing
 end
@@ -1547,6 +1672,55 @@ Build the interactive GUI from `default_ibm_configuration()` overridden by
 `kwargs`. Keyword names must match the declared parameter names exactly, such as
 `grid`, `dt`, and `seed`.
 """
+
+"""
+    setup_stage_editor_panel!(ax, stage_dist_obs, stage_labels)
+
+Populate the interactive initial stage abundance stem plot editor.
+"""
+function setup_stage_editor_panel!(ax, stage_dist_obs, stage_labels)
+    n_stages = length(stage_labels)
+    stem!(ax, 1:n_stages, stage_dist_obs; color = :steelblue, linewidth = 2)
+    scatter!(ax, 1:n_stages, stage_dist_obs; color = :crimson, markersize = 6)
+    ylims!(ax, 0, nothing)
+end
+
+"""
+    setup_env_dist_panel!(ax, depth_pts, temp_pts, hsi_pts)
+
+Populate empirical environmental driver distribution curves across the grid.
+"""
+function setup_env_dist_panel!(ax, depth_pts, temp_pts, hsi_pts)
+    lines!(ax, depth_pts, color = :royalblue, linewidth = 2.0, label = "Depth (norm)")
+    lines!(ax, temp_pts, color = :firebrick, linewidth = 2.0, label = "Temp (°C/10)")
+    lines!(ax, hsi_pts, color = :seagreen, linewidth = 2.0, label = "HSI")
+    axislegend(ax, position = :rt, labelsize = 9, framevisible = false)
+end
+
+"""
+    setup_criteria_panel!(ax, criteria_text_obs)
+
+Display multi-attribute calibration evaluation criteria in a monospaced block.
+"""
+function setup_criteria_panel!(ax, criteria_text_obs)
+    hidedecorations!(ax)
+    hidespines!(ax)
+    Label(ax.blockscene, criteria_text_obs; halign = :left, valign = :top,
+          fontsize = 11, font = "monospace", tellwidth = false, tellheight = false)
+end
+
+"""
+    setup_annual_table_panel!(ax, table_text_obs)
+
+Display formatted tabular annual production metrics in a monospaced block.
+"""
+function setup_annual_table_panel!(ax, table_text_obs)
+    hidedecorations!(ax)
+    hidespines!(ax)
+    Label(ax.blockscene, table_text_obs; halign = :left, valign = :top,
+          fontsize = 10, font = "monospace", tellwidth = false, tellheight = false)
+end
+
 function launch_organism_gui(; display_window::Bool = true,
     config_path::AbstractString = "", kwargs...)
     # A `config_path` that names a readable file is the base configuration, not
@@ -1616,6 +1790,15 @@ function launch_organism_gui(config::Dict{Symbol, Any}; display_window::Bool = t
     sz_init = Float32[Float32(max(4.0, a.size * 0.15)) for a in living_init]
     col_init = String[organism_color(a, params) for a in living_init]
 
+    agg_init = get(abmproperties(model), :aggregate_populations, nothing)
+    early_init = zeros(Float64, length(GUI_EARLY_STAGES))
+    if agg_init !== nothing
+        for g in agg_init.groups
+            i = findfirst(==(g.stage), GUI_EARLY_STAGES)
+            i === nothing || (early_init[i] += g.abundance)
+        end
+    end
+
     # 2. Construct IBMGuiState Container
     #
     # Keyword form throughout: see the `@kwdef` note on the struct. Every field is
@@ -1658,7 +1841,7 @@ function launch_organism_gui(config::Dict{Symbol, Any}; display_window::Bool = t
         obs_ts_biomass = Observable(Point2f[(0.0, 0.0)]),
         obs_ts_catch = Observable(Point2f[(0.0, 0.0)]),
         n_egg_history = Float64[0.0],
-        n_early_stage_history = [Float64[0.0] for _ in GUI_EARLY_STAGES],
+        n_early_stage_history = [Float64[early_init[i]] for i in eachindex(GUI_EARLY_STAGES)],
         n_early_agents_history = NTuple{3, Float64}[(0.0, 0.0, 0.0)],
         obs_current_egg = Observable(0.0),
                 obs_current_agents = Observable((0.0, 0.0, 0.0)),
@@ -1670,8 +1853,8 @@ function launch_organism_gui(config::Dict{Symbol, Any}; display_window::Bool = t
         obs_stage_female = Observable(zeros(Float64,
             params.organism.max_stage_female - params.organism.juvenile_max_stage + 1)),
         obs_ts_egg = Observable(Point2f[(0.0, log10_count(0.0))]),
-        obs_ts_early_stage = [Observable(Point2f[(0.0, log10_count(0.0))])
-                               for _ in GUI_EARLY_STAGES],
+        obs_ts_early_stage = [Observable(Point2f[(0.0, log10_count(early_init[i]))])
+                               for i in eachindex(GUI_EARLY_STAGES)],
         obs_ts_early_agents = Observable(Point2f[(0.0, log10_count(0.0))]),
         obs_ts_early_agents_f = Observable(Point2f[(0.0, log10_count(0.0))]),
         obs_ts_early_agents_u = Observable(Point2f[(0.0, log10_count(0.0))]),
@@ -1795,6 +1978,24 @@ function launch_organism_gui(config::Dict{Symbol, Any}; display_window::Bool = t
         end
     end
 
+    btn_export_toml = Button(transport_grid[8, 1:2], label = "Export TOML")
+    btn_save_parquet = Button(transport_grid[8, 3:4], label = "Save Lakehouse")
+
+    Label(transport_grid[9, 1:4], "Jump Viewport:", font = :bold, fontsize = 11)
+    nav_menu = Menu(
+        transport_grid[10, 1:4],
+        options = [
+            "1. Spatial & Stages",
+            "2. Drivers & Abundance",
+            "3. Biomass & Demographics",
+            "4. S-R & Size Spectra",
+            "5. Ogives & Calibration",
+            "6. Annual Summary"
+        ],
+        default = "1. Spatial & Stages",
+        width = 240
+    )
+
     on(snap_menu.selection) do sel
         if sel !== nothing
             m = match(r"Year (\d+)", sel)
@@ -1819,9 +2020,27 @@ state.n_legal_history = copy(snap.n_legal_history)
         end
     end
     
-    # 3. Parameter Steering
-    Label(left_grid[3, 1], "Parameter Steering", font = :bold, fontsize = 16)
-    param_grid = left_grid[4, 1] = GridLayout(tellwidth = false)
+    # 3. Area of Interest (AOI)
+    aoi_grid = left_grid[3, 1] = GridLayout()
+    Label(aoi_grid[1, 1:4], "Area of Interest (AOI)", font = :bold, fontsize = 13)
+    Label(aoi_grid[2, 1:2], "Longitude (°W):", halign = :right)
+    lon_tb = Textbox(aoi_grid[2, 3:4], stored_string = "-63.5", validator = Float64, width = 60)
+    Label(aoi_grid[3, 1:2], "Latitude (°N):", halign = :right)
+    lat_tb = Textbox(aoi_grid[3, 3:4], stored_string = "44.5", validator = Float64, width = 60)
+    Label(aoi_grid[4, 1:2], state.aoi_depth_str, fontsize = 10, halign = :left)
+    Label(aoi_grid[4, 3:4], state.aoi_temp_str, fontsize = 10, halign = :left)
+    Label(aoi_grid[5, 1:4], state.aoi_hsi_str, fontsize = 10, halign = :center, font = :bold)
+
+    # 4. Spatial Exclusion (MPA)
+    mpa_grid = left_grid[4, 1] = GridLayout()
+    Label(mpa_grid[1, 1:2], "Spatial Exclusion (MPA)", font = :bold, fontsize = 13)
+    btn_draw_mpa = Button(mpa_grid[2, 1], label = @lift($(state.is_drawing_exclusion) ? "Click Map..." : "Draw MPA"))
+    btn_clear_mpa = Button(mpa_grid[2, 2], label = "Clear MPAs")
+    Label(mpa_grid[3, 1:2], state.obs_exclusion_status, fontsize = 9, halign = :left)
+
+    # 5. Parameter Steering
+    Label(left_grid[5, 1], "Parameter Steering", font = :bold, fontsize = 16)
+    param_grid = left_grid[6, 1] = GridLayout(tellwidth = false)
 
     # One table drives the widgets, the live-edit handler and the Reset handler.
     # Previously each of the three was a separate list indexed positionally, and
@@ -1896,7 +2115,7 @@ state.n_legal_history = copy(snap.n_legal_history)
     end
 
     # 4. Process Feature Switches (Toggles)
-    tog_grid = left_grid[5, 1] = GridLayout(tellwidth = false)
+    tog_grid = left_grid[7, 1] = GridLayout(tellwidth = false)
     Label(tog_grid[1, 1:4], "Biological Process Toggles", font = :bold)
 
     tog_energetics = Toggle(tog_grid[2, 1], active = params.toggles.use_energetics)
@@ -1956,34 +2175,194 @@ state.n_legal_history = copy(snap.n_legal_history)
     # nothing sits above it to re-derive its width. `fig.layout.colsizes` is assigned
     # at the end of this function, once all three children exist.
 
-    # Left plots: Map, Macro, SR. 12 rows, sized so the map is square and fills the
-    # column and the two panels below it match a right-column panel's height.
-    left_content = fig[1, 2] = GridLayout()
-    # Right plots: Abundance, Stage, Size, Ogive. 12 rows, 3 per panel -> 1/4 height
-    # each. LCM(3, 4) = 12 so both columns divide the same height evenly.
-    right_content = fig[1, 3] = GridLayout()
+    # --------------------------------------------------------------------------
+    # Scrollable Analytical Viewport & Layout
+    # --------------------------------------------------------------------------
+    fig_w, fig_h = GLMakie.size(fig.scene)
+    viewport_x = Float64(CONTROL_PANEL_WIDTH + COLUMN_GAP + 10)
+    viewport_y = 20.0
+    viewport_w = Float64(max(600, fig_w - viewport_x - 40))
+    viewport_h = Float64(max(400, fig_h - 40))
+    row_h = 380.0
+    row_gap = 40.0
+    max_scroll = 2100.0
 
-    # --------------------------------------------------------------------------
-    # Left Column: Map (rows 1–6), Macro (rows 7–9), SR (rows 10–12)
-    #
-    # The map takes half the height (6 rows) and the two panels below it take three
-    # rows each, matching the three rows a right-column panel gets. So Macro and SR
-    # are exactly as tall as the panels to their right, and — since the left column
-    # is sized to the map — exactly as wide as it too.
-    # --------------------------------------------------------------------------
+    scroll_pos = Observable(0.0)
+
+    scroll_slider = Slider(
+        fig[1, 3],
+        range = 0.0:10.0:max_scroll,
+        startvalue = 0.0,
+        horizontal = false,
+        width = 16
+    )
+
+    on(scroll_slider.value) do val
+        scroll_pos[] = val
+    end
+
+    on(nav_menu.selection) do sel
+        if sel !== nothing
+            if startswith(sel, "1.")
+                set_close_to!(scroll_slider, 0.0)
+            elseif startswith(sel, "2.")
+                set_close_to!(scroll_slider, 420.0)
+            elseif startswith(sel, "3.")
+                set_close_to!(scroll_slider, 840.0)
+            elseif startswith(sel, "4.")
+                set_close_to!(scroll_slider, 1260.0)
+            elseif startswith(sel, "5.")
+                set_close_to!(scroll_slider, 1680.0)
+            elseif startswith(sel, "6.")
+                set_close_to!(scroll_slider, 2100.0)
+            end
+        end
+    end
+
+    col_gap = 20.0
+    col_w = floor(Int, (viewport_w - 40.0) / 2.0)
+    col1_x = viewport_x + 10.0
+    col2_x = col1_x + col_w + col_gap
+
+    base_ys = [2100.0, 1680.0, 1260.0, 840.0, 420.0, 0.0]
+
+    function create_scrolled_bbox(col_x, base_y, w, h)
+        return lift(scroll_pos) do sp
+            y_screen = (viewport_y + viewport_h - (row_h + 20.0)) - (2100.0 - base_y) + sp
+            Rect2i(round(Int, col_x), round(Int, y_screen), round(Int, w), round(Int, h))
+        end
+    end
+
+    # Row 1: Spatial Map & Interactive Initial Stage Distribution Editor
+    b_map = create_scrolled_bbox(col1_x, base_ys[1], col_w, row_h)
     ax_map = Axis(
-        left_content[1:6, 1],
-        title = "Spatial Habitat & Organism Distribution",
+        fig.scene,
+        bbox = b_map,
+        title = "Spatial Habitat & Organism Distribution (Click to draw MPA)",
         xlabel = "Grid X",
         ylabel = "Grid Y"
     )
     setup_spatial_panel!(
         ax_map, state.obs_env_field, state.obs_agent_x, state.obs_agent_y,
-        state.obs_agent_sizes, state.obs_agent_colors
+        state.obs_agent_sizes, state.obs_agent_colors;
+        exclusion_lines = state.obs_exclusion_lines
     )
 
+    stage_editor_labels = string.(0:19)
+    b_stage_edit = create_scrolled_bbox(col2_x, base_ys[1], col_w, row_h)
+    ax_stage_edit = Axis(
+        fig.scene,
+        bbox = b_stage_edit,
+        title = "Initial Stage Abundance - click stem to edit (+-50, Shift -50)",
+        xlabel = "Developmental Stage",
+        ylabel = "Initial Count",
+        xticks = (1:20, stage_editor_labels),
+        xticklabelrotation = pi / 3
+    )
+    setup_stage_editor_panel!(ax_stage_edit, state.obs_stage_dist_init, stage_editor_labels)
+
+    # Click handler for stage editor
+    on(events(ax_stage_edit).mousebutton) do event
+        if event.button === Mouse.left && event.action === Mouse.press
+            pos = mouseposition(ax_stage_edit)
+            idx = round(Int, pos[1])
+            if 1 <= idx <= 20
+                cur = copy(state.obs_stage_dist_init[])
+                is_shift = (Keyboard.left_shift in events(fig.scene).keyboardstate ||
+                            Keyboard.right_shift in events(fig.scene).keyboardstate)
+                delta = is_shift ? -50.0 : +50.0
+                cur[idx] = max(0.0, cur[idx] + delta)
+                state.obs_stage_dist_init[] = cur
+                state.obs_total_seed_str[] = "Total: " * string(round(Int, sum(cur)))
+                cohorts = map_stage_distribution_to_cohorts(cur)
+                p = abmproperties(state.model)[:params]
+                abmproperties(state.model)[:params] = reconstruct_params(
+                    p;
+                    initial_aggregate_cohort = cohorts.aggregate,
+                    initial_male_cohort = cohorts.male,
+                    initial_female_cohort = cohorts.female
+                )
+            end
+        end
+    end
+
+    # Click handler for drawing AABB exclusion zones on ax_map
+    on(events(ax_map).mousebutton) do event
+        if event.button === Mouse.left && event.action === Mouse.press
+            if state.is_drawing_exclusion[]
+                pos = mouseposition(ax_map)
+                if state.exclusion_draw_start[] === nothing
+                    state.exclusion_draw_start[] = Point2f(pos)
+                    state.obs_exclusion_status[] = @sprintf("Drawing: First corner (%.1f, %.1f) set. Click opposite corner.", pos[1], pos[2])
+                else
+                    p1 = state.exclusion_draw_start[]
+                    p2 = Point2f(pos)
+                    x1, x2 = min(p1[1], p2[1]), max(p1[1], p2[1])
+                    y1, y2 = min(p1[2], p2[2]), max(p1[2], p2[2])
+                    new_box = ExclusionBox(
+                        id = length(state.exclusion_boxes[]) + 1,
+                        name = "MPA-$(length(state.exclusion_boxes[]) + 1)",
+                        xmin = Float64(x1), xmax = Float64(x2),
+                        ymin = Float64(y1), ymax = Float64(y2),
+                        active = true
+                    )
+                    push!(state.exclusion_boxes[], new_box)
+                    if haskey(abmproperties(state.model), :exclusion_boxes)
+                        push!(abmproperties(state.model)[:exclusion_boxes], new_box)
+                    else
+                        abmproperties(state.model)[:exclusion_boxes] = [new_box]
+                    end
+                    state.exclusion_draw_start[] = nothing
+                    state.is_drawing_exclusion[] = false
+
+                    rect_pts = Point2f[]
+                    for b in state.exclusion_boxes[]
+                        push!(rect_pts, Point2f(b.xmin, b.ymin), Point2f(b.xmax, b.ymin))
+                        push!(rect_pts, Point2f(b.xmax, b.ymin), Point2f(b.xmax, b.ymax))
+                        push!(rect_pts, Point2f(b.xmax, b.ymax), Point2f(b.xmin, b.ymax))
+                        push!(rect_pts, Point2f(b.xmin, b.ymax), Point2f(b.xmin, b.ymin))
+                    end
+                    state.obs_exclusion_lines[] = rect_pts
+                    state.obs_exclusion_status[] = @sprintf("Active MPA: [%.1f, %.1f] x [%.1f, %.1f]", x1, x2, y1, y2)
+
+                    if !state.has_baseline[] && !isempty(state.biomass_legal_history)
+                        state.obs_baseline_biomass[] = copy(state.obs_ts_biomass[])
+                        state.obs_baseline_catch[] = copy(state.obs_ts_catch[])
+                        state.has_baseline[] = true
+                    end
+                end
+            end
+        end
+    end
+
+    # Row 2: Environmental Distributions & Population Abundance Trajectories
+    b_env = create_scrolled_bbox(col1_x, base_ys[2], col_w, row_h)
+    ax_env = Axis(
+        fig.scene,
+        bbox = b_env,
+        title = "Environmental Driver Distributions (Depth, Temp, HSI)",
+        xlabel = "Normalized Value",
+        ylabel = "Density"
+    )
+    setup_env_dist_panel!(ax_env, state.obs_env_depths, state.obs_env_temps, state.obs_env_hsi)
+
+    b_ts_n = create_scrolled_bbox(col2_x, base_ys[2], col_w, row_h)
+    ax_ts_n = Axis(
+        fig.scene,
+        bbox = b_ts_n,
+        title = "Abundance Trajectories",
+        xlabel = "Time (days)",
+        ylabel = "log10(count)"
+    )
+    setup_abundance_panel!(
+        ax_ts_n, state.obs_ts_total, state.obs_ts_females, state.obs_ts_males, state.obs_ts_legal
+    )
+
+    # Row 3: Biomass Dynamics & Macro Models / Demographic Stage Structure
+    b_macro = create_scrolled_bbox(col1_x, base_ys[3], col_w, row_h)
     ax_macro = Axis(
-        left_content[7:9, 1],
+        fig.scene,
+        bbox = b_macro,
         title = "Biomass, Catch & Macro-Models",
         xlabel = "Simulation Time (days)",
         ylabel = "Biomass (kg)"
@@ -1994,35 +2373,8 @@ state.n_legal_history = copy(snap.n_legal_history)
         label_obs = state.macro_label_observed[],
         label_sch = state.macro_label_sch[],
         label_dd = state.macro_label_dd[],
-        label_les = state.macro_label_les[]
-    )
-
-    sr_cell = left_content[10:12, 1] = GridLayout()
-    sr_cell.tellheight = true
-    sr_cell.tellwidth = true
-    ax_sr = Axis(
-        sr_cell[1, 1],
-        title = "Stock-Recruitment (Male Component)",
-        xlabel = "log10(Annual Eggs / 2)",
-        ylabel = "log10(Males at Recruitment Stage)"
-    )
-    setup_stock_recruitment_panel!(
-        ax_sr, state.obs_sr_pts, state.obs_sr_fit_curve, state.obs_sr_fit_curve_bh
-    )
-    GLMakie.Label(sr_cell[1, 1], state.obs_sr_fit_text;
-        halign = :left, valign = :top, fontsize = 8, color = :black,
-        tellwidth = false, tellheight = false)
-
-    # Right Column: Abundance (rows 1–3), Stage (rows 4–6), Size (rows 7–9), Ogive (rows 10–12)
-    # --------------------------------------------------------------------------
-    ax_ts_n = Axis(
-        right_content[1:3, 1],
-        title = "Abundance Trajectories",
-        xlabel = "Time (days)",
-        ylabel = "log10(count)"
-    )
-    setup_abundance_panel!(
-        ax_ts_n, state.obs_ts_total, state.obs_ts_females, state.obs_ts_males, state.obs_ts_legal
+        label_les = state.macro_label_les[],
+        baseline_biomass = state.obs_baseline_biomass
     )
 
     n_agg = params.organism.juvenile_max_stage - 1
@@ -2035,8 +2387,10 @@ state.n_legal_history = copy(snap.n_legal_history)
     first_agent_cat = 2 + n_agg
     n_cats = length(stage_labels)
 
+    b_stage = create_scrolled_bbox(col2_x, base_ys[3], col_w, row_h)
     ax_stage = Axis(
-        right_content[4:6, 1],
+        fig.scene,
+        bbox = b_stage,
         title = "Stage Abundance",
         xlabel = "Stage",
         ylabel = "log10(number)",
@@ -2066,8 +2420,23 @@ state.n_legal_history = copy(snap.n_legal_history)
         obs_egg_y, obs_agg_y, obs_male_y, obs_female_y
     )
 
+    # Row 4: Stock-Recruitment Dynamics & Size Frequency Spectra
+    b_sr = create_scrolled_bbox(col1_x, base_ys[4], col_w, row_h)
+    ax_sr = Axis(
+        fig.scene,
+        bbox = b_sr,
+        title = "Stock-Recruitment (Male Component)",
+        xlabel = "log10(Annual Eggs / 2)",
+        ylabel = "log10(Males at Recruitment Stage)"
+    )
+    setup_stock_recruitment_panel!(
+        ax_sr, state.obs_sr_pts, state.obs_sr_fit_curve, state.obs_sr_fit_curve_bh
+    )
+
+    b_size = create_scrolled_bbox(col2_x, base_ys[4], col_w, row_h)
     ax_size = Axis(
-        right_content[7:9, 1],
+        fig.scene,
+        bbox = b_size,
         title = "Size Frequency by Sex and Maturity",
         xlabel = "Size (mm)",
         ylabel = "Density"
@@ -2091,8 +2460,11 @@ state.n_legal_history = copy(snap.n_legal_history)
         params.fishery.legal_size_male; peak = peak
     )
 
+    # Row 5: Maturity Ogives & Multi-Attribute Calibration Criteria
+    b_ogive = create_scrolled_bbox(col1_x, base_ys[5], col_w, row_h)
     ax_ogive = Axis(
-        right_content[10:12, 1],
+        fig.scene,
+        bbox = b_ogive,
         title = "Maturity Ogive & Fishery Selectivity",
         xlabel = "Size (mm)",
         ylabel = "P(Mature) / Selectivity"
@@ -2102,6 +2474,65 @@ state.n_legal_history = copy(snap.n_legal_history)
         ax_ogive, params.fishery.legal_size_male,
         state.obs_ogive_male_pts, state.obs_ogive_female_pts
     )
+
+    b_crit = create_scrolled_bbox(col2_x, base_ys[5], col_w, row_h)
+    ax_crit = Axis(
+        fig.scene,
+        bbox = b_crit,
+        title = "Multi-Attribute Calibration & Stopping Criteria"
+    )
+    setup_criteria_panel!(ax_crit, state.calib_criteria_text)
+
+    # Row 6: Annual Production & Assessment Summary Table
+    full_table_w = 2 * col_w + col_gap
+    b_ann_table = create_scrolled_bbox(col1_x, base_ys[6], full_table_w, row_h)
+    ax_ann_table = Axis(
+        fig.scene,
+        bbox = b_ann_table,
+        title = "Annual Production & Assessment Summary Table"
+    )
+    setup_annual_table_panel!(ax_ann_table, state.annual_table_text)
+
+    # List of all axes for visibility culling
+    all_dashboard_axes = [
+        (ax_map, base_ys[1], row_h),
+        (ax_stage_edit, base_ys[1], row_h),
+        (ax_env, base_ys[2], row_h),
+        (ax_ts_n, base_ys[2], row_h),
+        (ax_macro, base_ys[3], row_h),
+        (ax_stage, base_ys[3], row_h),
+        (ax_sr, base_ys[4], row_h),
+        (ax_size, base_ys[4], row_h),
+        (ax_ogive, base_ys[5], row_h),
+        (ax_crit, base_ys[5], row_h),
+        (ax_ann_table, base_ys[6], row_h)
+    ]
+
+    on(scroll_pos) do sp
+        for (ax, by, h) in all_dashboard_axes
+            y_screen = (viewport_y + viewport_h - (row_h + 20.0)) - (2100.0 - by) + sp
+            in_view = (y_screen + h >= viewport_y - 80.0) && (y_screen <= viewport_y + viewport_h + 80.0)
+            if ax.blockscene.visible[] != in_view
+                ax.blockscene.visible[] = in_view
+                ax.scene.visible[] = in_view
+            end
+        end
+    end
+
+    # Mouse wheel hook
+    on(events(fig.scene).scroll) do (dx, dy)
+        mpos = events(fig.scene).mouseposition[]
+        in_vp = (viewport_x <= mpos[1] <= viewport_x + viewport_w) &&
+                (viewport_y <= mpos[2] <= viewport_y + viewport_h)
+        if in_vp
+            step = -dy * 60.0
+            new_val = clamp(scroll_pos[] + step, 0.0, max_scroll)
+            set_close_to!(scroll_slider, new_val)
+        end
+    end
+
+    # Initial scroll update
+    scroll_pos[] = 0.0
 
     # The 50/50 split, applied at the one level that sticks.
     #
@@ -2123,28 +2554,8 @@ state.n_legal_history = copy(snap.n_legal_history)
     #
     # Assigned after all three children exist: assigning more column sizes than the
     # grid currently has raises a BoundsError.
-    fig_w, fig_h = GLMakie.size(fig.scene)
-    # Both plotting columns are half the figure height wide. That makes the square
-    # map fill its cell rather than letterbox, and it makes the right-hand panels
-    # the same width as the biomass/macro panel beside them. The two lower left
-    # panels each take three of the twelve rows, so they come out the height of a
-    # right-hand panel too.
-    left_w = round(Int, fig_h / 2)
-    right_w = left_w
-    # The gap is set explicitly because the width arithmetic above assumes it. Left
-    # to its default the three columns plus their gaps overflowed the window, and the
-    # layout spilled symmetrically — clipping the control panel's left-hand labels
-    # and cutting off the right-hand panels.
     fig.layout.default_colgap = Fixed(COLUMN_GAP)
-    fig.layout.colsizes = [Fixed(CONTROL_PANEL_WIDTH), Fixed(left_w), Fixed(right_w)]
-    # Each plot grid also needs its own single column sized. Sizing only the figure
-    # fixes where a grid sits and how wide its slot is; the grid's own column is
-    # still `Auto()`, sized from the axes inside, and for the map that meant a square
-    # preferred width — its plot rectangle came out zero pixels wide. Each grid has
-    # exactly one column here, so this assigns one size to one column and cannot hit
-    # the arity mismatch seen when assigning two sizes to a one-column grid.
-    left_content.colsizes = [Fixed(left_w)]
-    right_content.colsizes = [Fixed(right_w)]
+    fig.layout.colsizes = [Fixed(CONTROL_PANEL_WIDTH), Relative(1), Fixed(16)]
     # Row heights are left at Makie's default. Stating them made things worse: the
     # cells are sized from the space an axis needs for its title, tick labels and
     # legend, so `Fixed` acts as a floor and each row came out around 92 px instead
@@ -2229,15 +2640,108 @@ state.n_legal_history = copy(snap.n_legal_history)
         end
     end
 
+    on(btn_draw_mpa.clicks) do _
+        state.is_drawing_exclusion[] = !state.is_drawing_exclusion[]
+        state.exclusion_draw_start[] = nothing
+        state.obs_exclusion_status[] = state.is_drawing_exclusion[] ? "Click map: 1st corner..." : "Drawing cancelled"
+    end
+
+    on(btn_clear_mpa.clicks) do _
+        empty!(state.exclusion_boxes[])
+        empty!(state.obs_exclusion_lines[])
+        if haskey(abmproperties(state.model), :exclusion_boxes)
+            empty!(abmproperties(state.model)[:exclusion_boxes])
+        end
+        state.obs_exclusion_status[] = "No active exclusion zone"
+    end
+
+    on(btn_export_toml.clicks) do _
+        try
+            ts_str = Dates.format(Dates.now(), "yyyymmdd_HHMMSS")
+            scen_dir = normpath(joinpath(_PROJECT_ROOT, "configs", "scenarios"))
+            mkpath(scen_dir)
+            scen_file = joinpath(scen_dir, "scenario_$(ts_str).toml")
+            cfg_out = Dict{Symbol, Any}(
+                :environment => copy(params.environment),
+                :simulation => copy(params.simulation),
+                :fishery => copy(params.fishery)
+            )
+            export_scenario_toml(
+                scen_file, cfg_out;
+                aoi_coords = (lon = state.aoi_lon[], lat = state.aoi_lat[]),
+                exclusion_boxes = state.exclusion_boxes[],
+                stage_distribution = state.obs_stage_dist_init[]
+            )
+            state.status_text[] = "Exported: $(basename(scen_file))"
+        catch e
+            state.status_text[] = "Export failed: $e"
+        end
+    end
+
+    on(btn_save_parquet.clicks) do _
+        if !isempty(state.annual_data)
+            try
+                lake_path = lakehouse_tethysbio_path("simulation_results")
+                _write_annual_production_collection(
+                    lake_path, state.annual_data;
+                    dt_year = 365.0,
+                    frequency_days = 365.0,
+                    snapshot_day = 274.0,
+                    meta = Dict(:days => state.current_time[])
+                )
+                state.status_text[] = "Saved: annual_production.parquet"
+            catch e
+                state.status_text[] = "Lakehouse save failed: $e"
+            end
+        else
+            state.status_text[] = "Lakehouse save requires annual data"
+        end
+    end
+
+    function update_aoi_calculations!()
+        lon = state.aoi_lon[]
+        lat = state.aoi_lat[]
+        bathy = estimate_aoi_bathymetry(lon, lat; n_points = size(state.obs_env_field[], 1))
+        state.aoi_depth_str[] = @sprintf("Depth: %.1f m", bathy.mean_depth)
+        t_bot = aoi_bottom_temperature(bathy.mean_depth, lat)
+        state.aoi_temp_str[] = @sprintf("Temp: %.2f °C", t_bot)
+        hsi_val = aoi_habitat_suitability(t_bot, bathy.mean_depth)
+        state.aoi_hsi_str[] = @sprintf("HSI: %.4f", hsi_val)
+    end
+
+    on(lon_tb.stored_string) do s
+        try
+            state.aoi_lon[] = parse(Float64, s)
+            update_aoi_calculations!()
+        catch
+        end
+    end
+
+    on(lat_tb.stored_string) do s
+        try
+            state.aoi_lat[] = parse(Float64, s)
+            update_aoi_calculations!()
+        catch
+        end
+    end
+
     # --------------------------------------------------------------------------
     # Asynchronous Stepping Loop
     # --------------------------------------------------------------------------
-    state.sim_task = @async while true
-        if state.is_running[]
-            step_gui_simulation!(state, state.sim_speed_days[])
-            sleep(0.02) # Yield to OpenGL UI event loop
-        else
-            sleep(0.08)
+    if display_window
+        state.sim_task = @async while state.is_active[]
+            if state.is_running[]
+                step_gui_simulation!(state, state.sim_speed_days[])
+                sleep(0.02) # Yield to OpenGL UI event loop
+            else
+                sleep(0.08)
+            end
+        end
+
+        on(events(fig.scene).window_open) do is_open
+            if !is_open
+                close_gui!(state)
+            end
         end
     end
 
