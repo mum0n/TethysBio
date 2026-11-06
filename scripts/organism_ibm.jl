@@ -29,6 +29,7 @@ using Random
 using Statistics
 using DataFrames
 using CairoMakie
+using GLMakie
 
 # Activate environment and load TethysBio
 using TethysBio
