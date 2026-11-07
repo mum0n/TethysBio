@@ -1,7 +1,7 @@
 """
     TethysBio
 
-End-to-end individual- and agent-based simulation model (IBM) for biological populations, integrated with Tethys.jl.
+End-to-end individual- and agent-based simulation model (IBM) for biological populations.
 """
 module TethysBio
 
@@ -11,15 +11,20 @@ using Distributions
 using CairoMakie
 using Random
 using Statistics
-using Tethys
+using GeoData
+using GeoDataSources
+using Parquet2
 using Interpolations
 
 const _PROJECT_ROOT = normpath(joinpath(@__DIR__, ".."))
+const _DATA_ROOT = joinpath(_PROJECT_ROOT, "data")
 
 # Include submodules and components
 include("types.jl")
 include("dashboard_shared.jl")
 using .DashboardShared
+include("project_paths.jl")
+include("environmental_io.jl")
 include("organism_dynamics.jl")
 include("species.jl")
 include("simulation.jl")
@@ -81,6 +86,7 @@ export default_agent_observations
 export organism_disperse!, nagents, allagents, abmrng, safe_mean, safe_sum
 export default_ibm_configuration, load_ibm_configuration, save_ibm_configuration
 export TethysBio_store_root, environmental_store_dir, environmental_input_status
+export tethysbio_project_path
 export assimilate_environmental_inputs, read_assimilated_environment
 export parameter_struct_defaults
 export config_field_types, config_field_type, coerce_config_value

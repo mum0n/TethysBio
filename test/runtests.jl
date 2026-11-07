@@ -23,9 +23,10 @@ const AVAILABLE_SEGMENTS = Dict{Symbol, NamedTuple{(:title, :file), Tuple{String
     :simulation => ("Agent Simulation, Energetics, Mortality, and Dispersal", "test_simulation_agents.jl"),
     :vis        => ("Visualization Tools, Plots, and GUI Dashboard", "test_visualization_gui.jl"),
     :habitat    => ("Habitat Suitability and Tethys Environmental Integration", "test_habitat_environment.jl"),
+    :html       => ("HTML Dashboard Configuration and Controls", "test_html_dashboard.jl"),
 )
 
-const DEFAULT_SEGMENTS = [:biology, :macro, :config, :simulation, :vis, :habitat]
+const DEFAULT_SEGMENTS = [:biology, :macro, :config, :simulation, :vis, :habitat, :html]
 
 function parse_requested_segments(args)
     if isempty(args)

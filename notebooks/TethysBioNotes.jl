@@ -32,6 +32,18 @@ begin
     using TOML
     using LinearAlgebra
     using JLD2
+
+    html_config_toml = get(ENV, "TETHYSBIO_HTML_CONFIG", "")
+    html_cli_config = if isempty(html_config_toml)
+        Dict{Symbol, Any}()
+    else
+        parsed_config = TOML.parse(html_config_toml)
+        Dict{Symbol, Any}(
+            Symbol(key) => value
+            for section in values(parsed_config)
+            for (key, value) in section
+        )
+    end
     
     # Configure Makie plot aesthetics for high-resolution notebook display
     set_theme!(
@@ -96,16 +108,21 @@ Use the reactive widgets below to adjust external environmental drivers and fish
 Every modification automatically ripples through all downstream spatial, demographic,
 and macro-ecological analyses.
 
-*Environmental data lakehouse:* Bathymetry and ocean hydrography are resolved via
-`Tethys.lakehouse_dir("TethysBio")`, honoring `ENV["TethysBio_STORE_ROOT"]`,
-`ENV["GEODATA_LAKEHOUSE"]`, `LocalPreferences.toml`, and the workspace fallback.
+*Package-local environmental data:* Bathymetry and hydrography are stored beneath
+`TethysBio/data/environmental`; simulation outputs are stored beneath `TethysBio/data/results`.
 """
 
 # ╔═╡ a0000001-0001-0001-0001-000000000004
 begin
     # Ingest baseline configuration file
     snowcrab_toml_path = normpath(joinpath(@__DIR__, "..", "configs", "snowcrab.toml"))
-    raw_config = TOML.parsefile(snowcrab_toml_path)
+    raw_config = isempty(html_config_toml) ?
+        TOML.parsefile(snowcrab_toml_path) : TOML.parse(html_config_toml)
+    if haskey(raw_config, "runtime")
+        for (key, value) in raw_config["runtime"]
+            html_cli_config[Symbol(key)] = value
+        end
+    end
     
     # Extract baseline settings
     base_env = raw_config["environment"]
@@ -116,7 +133,7 @@ begin
     
     md"""
     Loaded baseline config from: `$(basename(snowcrab_toml_path))`
-    - Bathymetry Product: $(get(base_env, "bathymetry_source", "nwa_bathymetry")) (loaded via `Tethys.load_dataset`)
+    - Bathymetry Product: $(get(base_env, "bathymetry_source", "nwa_bathymetry")) (loaded from TethysBio local data)
     - Default Grid: $(base_sim["grid_nx"]) × $(base_sim["grid_ny"]) cells
     - Default Carrying Capacity $K$: $(base_env["benthic_carrying_capacity"]) organisms
     - Temperature Offset: $(t_offset_val) °C (Seasonal Multiplier: $(t_mult_val)×)
@@ -133,7 +150,12 @@ updating the simulated environmental drivers and Habitat Suitability Index (HSI)
 """
 
 # ╔═╡ a0000001-0001-0001-0001-000000000030
-@bind aoi_coords HTML(aoi_coords_widget(default_lon = -63.5, default_lat = 44.5))
+@bind aoi_coords HTML(aoi_coords_widget(
+    default_lon = isempty(html_cli_config) || !haskey(html_cli_config, :domain_lon) ?
+        -63.5 : mean(html_cli_config[:domain_lon]),
+    default_lat = isempty(html_cli_config) || !haskey(html_cli_config, :domain_lat) ?
+        44.5 : mean(html_cli_config[:domain_lat])
+))
 
 # ╔═╡ a0000001-0001-0001-0001-000000000055
 begin
@@ -223,7 +245,11 @@ begin
 end
 
 # ╔═╡ a0000001-0001-0001-0001-000000000006
-@bind steering_sliders HTML(parameter_steering_sliders_widget(default_interval = 10, default_years = 30))
+@bind steering_sliders HTML(parameter_steering_sliders_widget(
+    default_interval = 10,
+    default_years = max(1, ceil(Int, get(html_cli_config, :days, 730) / 365)),
+    defaults = html_cli_config
+))
 
 # ╔═╡ a0000001-0001-0001-0001-000000000033
 begin
@@ -275,20 +301,22 @@ recording individual agent transitions, energetic budgets, molting events, and a
 
 > ⚠️ **WARNING: STORE OVERWRITE HAZARD**
 >
-> Setting `run_model = true` executes the Individual-Based Model (IBM) multi-year population integration.
-> Running the model manually will integrate demographic agents and **overwrite or update existing simulation results**
-> in the lakehouse / scratch cache (`scratch/saved_ibm_run.jld2`).
+> Pressing Start or Step executes the Individual-Based Model (IBM) to the requested day.
+> Advanced results update the project-local scratch cache (`scratch/saved_ibm_run.jld2`).
 >
-> By default, `run_model = false`, loading previously computed lakehouse results for analysis and plotting.
+> Opening the dashboard does not start or overwrite a simulation. Stop / Reset returns to Day 0.
 """
-
-# ╔═╡ a0000001-0001-0001-0001-000000000060
-# Manual execution switch: defaults to false so opening the notebook does NOT run models or overwrite lakehouse data.
-# Set `run_model = true` ONLY when intending to integrate population trajectories and overwrite/update the store.
-run_model = false
 
 # ╔═╡ a0000001-0001-0001-0001-000000000031
 @bind transport_controls HTML(simulation_transport_widget(default_interval = 10, default_years = 30))
+
+# ╔═╡ a0000001-0001-0001-0001-000000000060
+# Transport controls request simulation work; startup remains paused at Day 0.
+run_model = begin
+    requested_day = Int(extract_ctrl_val(transport_controls, :current_day, 0))
+    requested_status = String(extract_ctrl_val(transport_controls, :sim_status, "stopped"))
+    requested_day > 0 || requested_status == "running"
+end
 
 # ╔═╡ a0000001-0001-0001-0001-000000000041
 md"""
@@ -436,10 +464,21 @@ begin
     )
 end
 
+  
+
+# ╔═╡ a0000001-0001-0001-0001-000000000061
+    html_simulation_cache = Ref{Any}(nothing)
+
+  
+
 # ╔═╡ a0000001-0001-0001-0001-000000000016
-sim_results = begin
+    sim_results = begin
     # 1. Ingest baseline dictionary from snowcrab.toml
     cfg = load_ibm_configuration(snowcrab_toml_path)
+    if !isempty(html_cli_config)
+        merge!(cfg, html_cli_config)
+        sync_grid_dimensions!(cfg; explicit = Set(keys(html_cli_config)))
+    end
     
     # 2. Extract settings from transport widget and parameter steering sliders
     sim_status = String(extract_ctrl_val(transport_controls, :sim_status, "stopped"))
@@ -467,6 +506,10 @@ sim_results = begin
     cfg[:habitat_offset] = Float64(extract_ctrl_val(steering_sliders, :habitat_offset, 0.0))
     cfg[:habitat_multiplier] = Float64(extract_ctrl_val(steering_sliders, :habitat_multiplier, 1.0))
     cfg[:food_max] = Float64(extract_ctrl_val(steering_sliders, :food_max, 10.0))
+    cfg[:food_replenishment_rate] = Float64(extract_ctrl_val(
+        steering_sliders, :food_replenishment_rate,
+        get(cfg, :food_replenishment_rate, 0.1)
+    ))
     cfg[:benthic_carrying_capacity] = Float64(extract_ctrl_val(steering_sliders, :benthic_carrying_capacity, 6000.0))
     cfg[:fishing_season_start] = Float64(extract_ctrl_val(steering_sliders, :fishing_season_start, 90.0))
     cfg[:fishing_season_end] = Float64(extract_ctrl_val(steering_sliders, :fishing_season_end, 150.0))
@@ -512,7 +555,8 @@ sim_results = begin
     
     # Preserve scale consistency for the smaller interactive grid
     scale_factor = (grid_res * grid_res) / (1000.0 * 1000.0)
-    adjusted_seed_agents = max(60, round(Int, 600 * sqrt(scale_factor)))
+    adjusted_seed_agents = Int(get(html_cli_config, :n_agents,
+        max(60, round(Int, 600 * sqrt(scale_factor)))))
     cfg[:n_agents] = adjusted_seed_agents
     
     # Dynamically bind spatial domain bounds around selected AOI coordinates
@@ -532,7 +576,7 @@ sim_results = begin
     explicit_keys = Set([
         :days, :grid, :domain_lon, :domain_lat, :temp_offset, :temp_multiplier,
         :temp_base, :temp_amplitude, :temp_noise_sd, :habitat_offset, :habitat_multiplier,
-        :food_max, :benthic_carrying_capacity,
+        :food_max, :food_replenishment_rate, :benthic_carrying_capacity,
         :fishing_season_start, :fishing_season_end,
         :fishing_probability_daily, :legal_size_male, :n_agents,
         :use_energetics, :use_thermal_stress, :use_cannibalism,
@@ -549,15 +593,6 @@ sim_results = begin
         aoi_depth_grid :
         estimate_aoi_bathymetry(sel_lon, sel_lat; span_meters = span_m, n_points = grid_res).depths
 
-    model = initialize_model(
-        n_agents = adjusted_seed_agents,
-        grid = (grid_res, grid_res),
-        dt = 1.0,
-        params = params,
-        depth_map = aoi_model_bathy,
-        seed = 1234
-    )
-    
     # 5. Define agent and model observation collectors
     adata = default_agent_observations(params)
     mdata = [
@@ -567,39 +602,69 @@ sim_results = begin
         :total_catch_biomass_kg
     ]
     
-    # 6. Execute simulation up to current interactive day or load cached instance
-    cache_file = isdefined(TethysBio, :lakehouse_tethysbio_path) ?
-        lakehouse_tethysbio_path("saved_ibm_run.jld2") :
-        normpath(joinpath(@__DIR__, "..", "scratch", "saved_ibm_run.jld2"))
+    # 6. Advance a persistent model only by the newly requested interval.
+    cache_file = tethysbio_project_path(joinpath("scratch", "saved_ibm_run.jld2"))
+    simulation_signature = hash(cfg)
+    cached_run = html_simulation_cache[]
+    cache_matches = cached_run !== nothing &&
+        cached_run.signature == simulation_signature &&
+        effective_days >= cached_run.sim_days
+    simulation_advanced = false
 
-    agent_df, model_df = if run_model
-        # Explicit user-triggered simulation execution: integrates population and overwrites store
-        println("Integrating IBM population model (run_model = true)...")
-        res_a, res_m = run_simulation(model, effective_days; adata = adata, mdata = mdata)
-        if effective_days > 0
+    if run_model && cache_matches
+        model = cached_run.model
+        agent_df = cached_run.agent_df
+        model_df = cached_run.model_df
+        additional_days = effective_days - cached_run.sim_days
+        if additional_days > 0
+            next_agents, next_model = run_simulation(
+                model, additional_days; adata = adata, mdata = mdata
+            )
+            append!(agent_df, next_agents[2:end, :])
+            append!(model_df, next_model[2:end, :])
+            simulation_advanced = true
+        end
+    elseif run_model
+        model = initialize_model(
+            n_agents = adjusted_seed_agents,
+            grid = (grid_res, grid_res),
+            dt = 1.0,
+            params = params,
+            depth_map = aoi_model_bathy,
+            seed = 1234
+        )
+        agent_df, model_df = run_simulation(
+            model, effective_days; adata = adata, mdata = mdata
+        )
+        simulation_advanced = effective_days > 0
+    else
+        model = initialize_model(
+            n_agents = adjusted_seed_agents,
+            grid = (grid_res, grid_res),
+            dt = 1.0,
+            params = params,
+            depth_map = aoi_model_bathy,
+            seed = 1234
+        )
+        agent_df, model_df = run_simulation(model, 0; adata = adata, mdata = mdata)
+        html_simulation_cache[] = nothing
+    end
+
+    if run_model
+        html_simulation_cache[] = (
+            signature = simulation_signature,
+            sim_days = effective_days,
+            model = model,
+            agent_df = agent_df,
+            model_df = model_df
+        )
+        if simulation_advanced && effective_days > 0
             mkpath(dirname(cache_file))
             try
-                JLD2.save(cache_file, "agent_df", res_a, "model_df", res_m)
+                JLD2.save(cache_file, "agent_df", agent_df, "model_df", model_df)
             catch err
-                @warn "Failed to update lakehouse cache: $err"
+                @warn "Failed to update project-local cache: $err"
             end
-        end
-        (res_a, res_m)
-    else
-        # Default behavior: load previously saved simulation store without re-running
-        scratch_fallback = normpath(joinpath(@__DIR__, "..", "scratch", "saved_ibm_run.jld2"))
-        chosen_cache = isfile(cache_file) ? cache_file : (isfile(scratch_fallback) ? scratch_fallback : "")
-        if !isempty(chosen_cache)
-            try
-                cached = JLD2.load(chosen_cache)
-                (cached["agent_df"], cached["model_df"])
-            catch err
-                @warn "Failed loading cache $(chosen_cache), fallback to initial model state: $err"
-                run_simulation(model, 0; adata = adata, mdata = mdata)
-            end
-        else
-            @info "No saved lakehouse cache found. Running initial step..."
-            run_simulation(model, 0; adata = adata, mdata = mdata)
         end
     end
     
@@ -608,12 +673,12 @@ sim_results = begin
     if run_model && effective_days > 0
         try
             save_simulation_results(
-                lakehouse_tethysbio_path("simulation_results"),
+                "simulation_results",
                 agent_df,
                 model_df
             )
         catch err
-            @warn "Failed saving lakehouse annual production parquet: $err"
+            @warn "Failed saving project-local annual production parquet: $err"
         end
     end
     
@@ -829,3 +894,4 @@ end
 # ╟─a0000001-0001-0001-0001-000000000029
 # ╠═a0000001-0001-0001-0001-000000000028
 # ╠═a0000001-0001-0001-0001-000000000056
+# ╠═a0000001-0001-0001-0001-000000000061

@@ -309,7 +309,7 @@ Flags:
   --config=<Path>            Configuration file (TOML format)
   --gui=<Bool>               Launch the interactive real-time scrollable GLMakie dashboard
   --notebook=<Bool>          Launch the reactive Pluto.jl notebook server
-  --html=<Bool>              Launch the browser web dashboard (WGLMakie / Bonito)
+  --html=<Bool>              Launch the interactive Pluto browser dashboard
   --help                     Show this help message
 
 Common parameters (see configs/default.toml for the full list):
@@ -327,7 +327,7 @@ Common parameters (see configs/default.toml for the full list):
                                            not per cell (default: 12000.0)
   --frequency_days=<Float>                 Output sampling interval (default: 365.0)
   --snapshot_day=<Float>                   Annual survey snapshot day of year (default: 274.0)
-  --save=<Bool>                            Write annual indicators to lakehouse (default: true)
+  --save=<Bool>                            Write annual indicators under data/results (default: true)
   --save_path=<Path>                       Lakehouse collection path (default: simulation_results)
   --plot=<Bool>                            Export diagnostic figures (default: false)
   --animate=<Bool>                         Record an animation (default: false)
@@ -541,6 +541,8 @@ function run_ibm_cli(args::AbstractVector = ARGS)::Int
         return 0
     end
 
+    config[:output_dir] = tethysbio_project_path(config[:output_dir])
+
     println("="^80)
     println(" Initializing Organism IBM Simulation...")
     println(" Configuration:")
@@ -618,7 +620,7 @@ function run_ibm_cli(args::AbstractVector = ARGS)::Int
             snapshot_day = Float64(config[:snapshot_day]),
             meta = Dict(:seed => config[:seed], :days => config[:days])
         )
-        println(" Saved annual simulation results to lakehouse collection: $(save_path)")
+        println(" Saved annual simulation results under TethysBio data: $(save_path)")
     end
 
     if config[:plot]
@@ -634,8 +636,10 @@ function run_ibm_cli(args::AbstractVector = ARGS)::Int
 
     if get(config, :animate, false)
         mkpath(config[:output_dir])
-        anim_path = isabspath(config[:animation_file]) ?
-            config[:animation_file] : joinpath(config[:output_dir], config[:animation_file])
+        anim_path = tethysbio_project_path(
+            isabspath(config[:animation_file]) ? config[:animation_file] :
+            joinpath(config[:output_dir], config[:animation_file])
+        )
         println(" Recording Agents.jl simulation animation to: $(anim_path)")
         t_anim = time()
         anim_model = initialize_model(

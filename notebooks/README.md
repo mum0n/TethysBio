@@ -4,7 +4,7 @@ The `TethysBioNotes.jl` Pluto notebook provides an interactive environment for c
 
 | Notebook | Spatial Domain | Calibrated Species | Data Sources |
 |---|---|---|---|
-| [`TethysBioNotes.jl`](TethysBioNotes.jl) | Configurable Scotian Shelf / Laurentian Channel window | Snow crab (*Chionoecetes opilio*) | TOML configuration files, interactive controls, and lakehouse store via `Tethys.lakehouse_dir` |
+| [`TethysBioNotes.jl`](TethysBioNotes.jl) | Configurable Scotian Shelf / Laurentian Channel window | Snow crab (*Chionoecetes opilio*) | TOML configuration files, interactive controls, and project-local `data/` storage |
 
 ## Functional Capabilities
 
@@ -28,7 +28,7 @@ Pluto is included as a project dependency. The notebook server can be launched d
 julia --project=. -e "using Pluto; Pluto.run()"
 ```
 
-Upon launching, selecting `TethysBioNotes.jl` activates the parent project environment (`Pkg.activate`). Relative paths resolve against the notebook directory, and environmental spatial datasets resolve through `Tethys.lakehouse_dir("TethysBio")`.
+Upon launching, selecting `TethysBioNotes.jl` activates the parent project environment (`Pkg.activate`). Environmental data, notebook caches, and simulation results resolve inside the TethysBio project directory.
 
 Headless execution can be evaluated through Pluto's session API:
 

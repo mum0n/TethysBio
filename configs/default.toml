@@ -90,8 +90,8 @@ temp_offset           = 0.0        # Baseline temperature offset (deg C)
 temp_multiplier       = 1.0        # Seasonal cycle amplitude multiplier (default: 1.0)
 temp_noise_sd         = 0.5        # Spatial thermal stochasticity (SD)
 temp_base_degreedays  = -1.5       # Extra degree-days contributed by temperature
-# --- Tethys Real Habitat Integration ---
-use_geodata           = false      # Query Tethys for real bathymetry and hydrography
+# --- Local environmental data ---
+use_geodata           = false      # Use locally stored bathymetry and hydrography
 domain_lon            = [-65.0, -63.0] # Longitudinal bounds [min_lon, max_lon]
 domain_lat            = [43.0, 45.0]   # Latitudinal bounds [min_lat, max_lat]
 time_range            = ["1993-01-01", "1993-12-31"] # Simulation temporal window
@@ -99,8 +99,8 @@ pelagic_depth         = 15.0       # Mean water column depth for planktonic stag
 temperature_source    = "woa23"    # Hydrographic provider (woa23, glorys12v1)
 temperature_month     = 0          # Climatological month (0 = annual)
 bathymetry_source     = "etopo2022"# Bathymetric dataset (etopo2022, erddap)
-geodata_input_dir     = "inputs"   # Cache directory for geospatial downloads
-geodata_store_dir     = "../lakehouse/TethysBio" # Assimilated environmental storage directory
+geodata_input_dir     = "data/inputs"
+geodata_store_dir     = "data/environmental"
 # --- Food and habitat ---
 food_max                        = 10.0    # Maximum local benthic food density
 food_replenishment_rate         = 0.1     # Daily replenishment increment per cell
@@ -503,8 +503,8 @@ fishing_season_end        = 150.0  # Last day of the fishing season
 # [output] — sampling, serialization and figures
 # -----------------------------------------------------------------------------
 [output]
-save           = true                      # Write annual indicators to the Tethys lakehouse
-save_path      = "simulation_results"      # Collection path under lakehouse/TethysBio
+save           = true                      # Write annual indicators under data/results
+save_path      = "simulation_results"      # Collection path under data/results
 # Day of year at which each annual snapshot is taken (~1 September).
 snapshot_day   = 274.0
 # Sampling interval in days. 365.0 means one snapshot per year at `snapshot_day`;
@@ -587,4 +587,3 @@ growth_rmse_weight     = 1.0    # Weight on growth RMSE (mm)
 ogive_bin_start        = 20.0   # Lower edge (mm)
 ogive_bin_step         = 10.0   # Bin width (mm)
 ogive_bin_stop         = 140.0  # Upper edge (mm)
-

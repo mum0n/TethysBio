@@ -2,14 +2,14 @@
 Post-hoc macro-ecological population dynamic model fitting CLI.
 
 Fits discrete-time Schaefer logistic surplus production models and
-Deriso-Schnute delay-difference models to simulation results (from a lakehouse collection),
+Deriso-Schnute delay-difference models to project-local simulation results,
 evaluating both the whole population and the fishable component (legal adult males).
 
 Usage:
     julia --project=. scripts/fit_macro_models.jl [options]
 
 Options:
-    --file <path>        TethysBio lakehouse collection path [REQUIRED]
+    --file <path>        TethysBio results collection path [REQUIRED]
     --lag <Int>          Delay-difference recruitment lag in years (default: 1)
     --retro              Run retrospective pattern analysis and compute Mohn's rho
     --peels <Int>        Number of retrospective peels for reanalysis (default: 5)
@@ -33,7 +33,7 @@ function parse_macro_args(args::Vector{String})
         :retro => false,
         :peels => 5,
         :leslie => false,
-        :output_dir => projectdir("outputs"),
+        :output_dir => TethysBio.tethysbio_project_path("outputs"),
         :plot => true,
         :help => false
     )
@@ -91,7 +91,7 @@ function parse_macro_args(args::Vector{String})
         elseif k_str == "peels"
             config[:peels] = parse(Int, v_str)
         elseif k_str == "output_dir"
-            config[:output_dir] = v_str
+            config[:output_dir] = TethysBio.tethysbio_project_path(v_str)
         end
     end
     return config
@@ -106,7 +106,7 @@ function display_help()
     println("    julia --project=. scripts/fit_macro_models.jl --file=<path> [OPTIONS]")
     println()
     println("Options:")
-    println("    --file=<path>        TethysBio lakehouse collection path [REQUIRED]")
+    println("    --file=<path>        TethysBio results collection path [REQUIRED]")
     println("    --lag=<Int>          Delay-difference recruitment lag in years (default: 1)")
     println("    --retro              Perform retrospective analysis & Mohn's rho")
     println("    --peels=<Int>        Number of retrospective peels (default: 5)")
@@ -138,7 +138,7 @@ function main()
     end
 
     println("="^75)
-    println(" Loading simulation results from lakehouse collection: $(input_path)")
+    println(" Loading simulation results from TethysBio data: $(input_path)")
     println(" Fitting Schaefer Logistic and Delay-Difference models (lag = $(config[:lag]) yr)...")
     println("="^75)
 

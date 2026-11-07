@@ -1,7 +1,7 @@
 """
     src/dashboard_shared.jl
 
-Shared domain models, analytical routines, and lakehouse persistence bridges
+Shared domain models, analytical routines, and package-local persistence bridges
 unifying interactive visualization across Pluto notebooks, native GLMakie windows,
 and WGLMakie/Bonito browser dashboards.
 
@@ -20,7 +20,6 @@ using DataFrames
 using TOML
 using Statistics
 using Printf
-using Tethys
 
 export ExclusionBox, is_in_exclusion_box, is_in_exclusion_zones
 export DEFAULT_STAGE_DISTRIBUTION, map_stage_distribution_to_cohorts
@@ -212,11 +211,10 @@ end
 """
     lakehouse_tethysbio_path(subpaths...) -> String
 
-Resolve a path relative to the primary TethysBio lakehouse namespace:
-`projects/lakehouse/TethysBio/`.
+Resolve a path relative to TethysBio's package-local `data` directory.
 """
 function lakehouse_tethysbio_path(subpaths...)::String
-    return normpath(joinpath(Tethys.lakehouse_dir("TethysBio"), subpaths...))
+    return tethysbio_data_path(subpaths...)
 end
 
 """
@@ -286,4 +284,3 @@ function export_scenario_toml(
 end
 
 end # module DashboardShared
-

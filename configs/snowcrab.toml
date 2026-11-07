@@ -114,8 +114,8 @@ pelagic_depth         = 15.0       # Mean water column depth for planktonic stag
 temperature_source    = "woa23"    # Hydrographic provider (woa23, glorys12v1)
 temperature_month     = 0         # Climatological month (0 = annual)
 bathymetry_source     = "nwa_bathymetry" # Bathymetric dataset (nwa_bathymetry, etopo2022, erddap)  # >>> snow crab override
-geodata_input_dir     = "inputs"   # Cache directory for geospatial downloads
-geodata_store_dir     = "../lakehouse/TethysBio" # Assimilated environmental storage directory
+geodata_input_dir     = "data/inputs"
+geodata_store_dir     = "data/environmental"
 # --- Food and habitat ---
 food_max                        = 10.0    # Maximum local benthic food density
 food_replenishment_rate         = 0.1     # Daily replenishment increment per cell
@@ -521,8 +521,8 @@ fishing_season_end        = 150.0  # Last day of the fishing season
 # [output] — sampling, serialization and figures
 # -----------------------------------------------------------------------------
 [output]
-save           = true                      # Write annual indicators to the Tethys lakehouse
-save_path      = "simulation_results"      # Collection path under lakehouse/TethysBio
+save           = true                      # Write annual indicators under data/results
+save_path      = "simulation_results"      # Collection path under data/results
 # Day of year at which each annual snapshot is taken (~1 September).
 snapshot_day   = 274.0
 # Sampling interval in days. 365.0 means one snapshot per year at `snapshot_day`;
@@ -605,4 +605,3 @@ growth_rmse_weight     = 1.0    # Weight on growth RMSE (mm)
 ogive_bin_start        = 20.0   # Lower edge (mm)
 ogive_bin_step         = 10.0   # Bin width (mm)
 ogive_bin_stop         = 140.0  # Upper edge (mm)
-

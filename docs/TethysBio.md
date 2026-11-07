@@ -283,8 +283,8 @@ julia --project=. scripts/organism_ibm.jl [OPTIONS]
 | `--frequency_days=<float>` | Float | `365.0` | Output sampling interval. |
 | `--snapshot_day=<float>` | Float | `274.0` | Annual survey snapshot day of year. |
 | `--output_dir=<path>` | String | `outputs` | Local destination for figures and animation. |
-| `--save=<bool>` | Bool | `true` | Write annual indicators to the Tethys lakehouse. |
-| `--save_path=<path>` | String | `simulation_results` | Lakehouse collection path below `TethysBio`; absolute paths override the namespace. |
+| `--save=<bool>` | Bool | `true` | Write annual indicators under `data/results`. |
+| `--save_path=<path>` | String | `simulation_results` | Project-local results collection path; paths outside TethysBio are rejected. |
 | `--plot=<bool>` | Bool | `false` | Export diagnostic figures. |
 | `--animate=<bool>` | Bool | `false` | Record an animation. |
 | `--gui=<bool>` | Bool | `false` | Launch the interactive dashboard. |
@@ -301,13 +301,12 @@ harvested until you set that probability.
 
 ### Simulation result collection
 
-When `output.save` is enabled, annual indicators are written to a compressed
-Parquet collection in the Tethys lakehouse. By default, `output.save_path = "simulation_results"`
-resolves to `Tethys.lakehouse_dir("TethysBio", "simulation_results")`; an absolute
-path is an explicit override, while a relative path cannot leave the TethysBio
-namespace. `output.output_dir` remains the local directory for figures and
-animation. The collection contains `annual_production.parquet` and
-`run_metadata.parquet`, written through `Tethys.GeoStorage` with Zstd compression. GeoParquet metadata is used for spatial tables; these indicator tables are non-spatial Parquet.
+When `output.save` is enabled, annual indicators are written to compressed Parquet
+files under TethysBio's `data/results` directory. By default,
+`output.save_path = "simulation_results"` resolves to
+`TethysBio/data/results/simulation_results`; paths outside the project are rejected.
+`output.output_dir` is also resolved inside the project. The collection contains
+`annual_production.parquet` and `run_metadata.parquet`, written with Zstd compression.
 
 The post-hoc macro CLI accepts the same collection path, for example:
 
@@ -393,7 +392,7 @@ end
 
 The top-level configuration structure integrates eleven nested parameter containers. Operational feature switches are defined in `toggles::ProcessToggles`. Numerical integration settings, including time step $\Delta t$, pseudo-random seed, calendar length, and initial cohort abundance distributions, are specified in `simulation::SimulationParams`. Environmental forcing fields, encompassing baseline temperature, seasonal amplitude, food renewal rates, spatial taxis weights, and benthic carrying capacity, reside in `environment::EnvironmentParams`. Metabolic scaling parameters, Kleiber mass exponents, ecdysial energy thresholds, asymptotic size limits, and stage designations are grouped in `organism::OrganismParams`.
 
-Phenological schedules governing seasonal molting windows, mating seasons, thermal egg incubation rates, and spermathecal storage capacity are parameterized in `phenology::PhenologyParams`. Natural mortality hazard baselines, size-attenuated predation, soft-shell vulnerability, starvation thresholds, thermal stress coefficients, cuticular senescence, and cannibalism encounter rates are managed in `mortality::MortalityParams`. Commercial exploitation settings, including minimum legal carapace width, fishing season calendar dates, and daily harvest probability, are specified in `fishery::FisheryParams`. Observation frequencies, snapshot timing, and lakehouse storage locations are defined in `output::OutputParams`. Species-specific allometric growth increments, length-mass power curves, logistic maturity ogives, and brood fecundity equations are stored in `species::SpeciesParams`. Projection-matrix configurations for generalized Leslie and Lefkovitch models are housed in `leslie::LeslieParams`, while biological fidelity thresholds for parameter calibration and sensitivity analyses are declared in `criteria::CriteriaParams`.
+Phenological schedules governing seasonal molting windows, mating seasons, thermal egg incubation rates, and spermathecal storage capacity are parameterized in `phenology::PhenologyParams`. Natural mortality hazard baselines, size-attenuated predation, soft-shell vulnerability, starvation thresholds, thermal stress coefficients, cuticular senescence, and cannibalism encounter rates are managed in `mortality::MortalityParams`. Commercial exploitation settings, including minimum legal carapace width, fishing season calendar dates, and daily harvest probability, are specified in `fishery::FisheryParams`. Observation frequencies, snapshot timing, and project-local output locations are defined in `output::OutputParams`. Species-specific allometric growth increments, length-mass power curves, logistic maturity ogives, and brood fecundity equations are stored in `species::SpeciesParams`. Projection-matrix configurations for generalized Leslie and Lefkovitch models are housed in `leslie::LeslieParams`, while biological fidelity thresholds for parameter calibration and sensitivity analyses are declared in `criteria::CriteriaParams`.
 
 There is no binning section. Demographic histogramming was configured but never
 implemented, so the section only ever advertised settings that had no effect; it has
@@ -510,17 +509,17 @@ Inline predicates for demographic filtering:
 - `fit_stock_recruitment(spawners, recruits; model_type=:both)`: Fits Beverton-Holt ($R = \frac{\alpha S}{1 + \beta S}$) and/or Ricker ($R = \alpha S e^{-\beta S}$); with `:both`, model selection is by AIC.
 - `summarize_stock_recruitment(sr_df::DataFrame; fits=nothing)`: Prints the stock-recruitment table and, when fits are supplied, the parameter estimates ($R^2$, $\alpha$, $\beta$, $S_{\max}$).
 - `extract_annual_production(agent_df, model_df; dt_year=365.0, frequency_days=dt_year, snapshot_day=274.0)`: Annual time series of totals and survey-snapshot biomass, catches and egg production, plus per-stage columns (`stage_1`, ...) from `ANNUAL_PRODUCTION_SCHEMA` — an empty short run returns the same columns as a populated long one.
-- `resolve_simulation_results_path(path)`: Resolves relative collections below `Tethys.lakehouse_dir("TethysBio")` and rejects namespace escapes; absolute paths are explicit overrides.
-- `save_simulation_results(path, agent_df, model_df; dt_year=365.0, frequency_days=dt_year, snapshot_day=274.0, meta=Dict())`: Extracts annual indicators and writes Zstd-compressed `annual_production.parquet` plus `run_metadata.parquet` to a Tethys lakehouse collection; returns the absolute collection directory.
-- `load_simulation_results(path)`: Loads the annual-production Parquet table from a lakehouse collection.
+- `resolve_simulation_results_path(path)`: Resolves result collections below `data/results` and rejects paths outside the project.
+- `save_simulation_results(path, agent_df, model_df; dt_year=365.0, frequency_days=dt_year, snapshot_day=274.0, meta=Dict())`: Extracts annual indicators and writes Zstd-compressed `annual_production.parquet` plus `run_metadata.parquet` to a project-local collection; returns its absolute directory.
+- `load_simulation_results(path)`: Loads the annual-production Parquet table from a project-local collection.
 - `fit_schaefer(time, numbers, catches; label="Population")`: Surplus-production fit $\frac{dB}{dt} = rB\left(1 - \frac{B}{K}\right) - C$ in the units of `numbers`; returns `r`, `K`, `MSY`, `N_msy`, `U_msy` with trajectory, $R^2$, RMSE and AIC.
 - `fit_delay_difference(time, numbers, catches; lag=1, label="Population")`: Deriso-Schnute delay-difference fit returning survival `s`, natural mortality `M` and the recruitment parameters.
-- `fit_population_dynamics(source; lag=1)`: Unified whole-population dispatch — `source` may be a lakehouse collection path, an `(agent_df, model_df)` tuple, or an annual-production table; returns a `NamedTuple` with the Schaefer and delay-difference fits plus the annual table.
+- `fit_population_dynamics(source; lag=1)`: Unified whole-population dispatch — `source` may be a project-local results path, an `(agent_df, model_df)` tuple, or an annual-production table; returns a `NamedTuple` with the Schaefer and delay-difference fits plus the annual table.
 - `summarize_population_dynamics(macro_fits)`: Prints parameter estimates and diagnostics ($r$, $K$, MSY, $N_{\text{MSY}}$, $R^2$, RMSE) for each macro fit.
 - `mohn_rho(terminal_peeled, terminal_base)`: Mohn's $\rho$ retrospective bias; the two peel vectors must have equal length.
 - `retrospective_analysis(source; n_peels=5, model_type=:schaefer, lag=1)`: Sequentially peels terminal years, refits, and quantifies retrospective stability; `model_type = :both` is not supported here and warns before falling back.
 - `summarize_retrospective(retro_result)`: Prints the peel table and Mohn's $\rho$.
-- `extract_annual_stage_matrix(source; stages=build_stages())`: Returns `(stage_matrix, catch_matrix, years)` from a live model, an `(agent_df, model_df)` tuple, an annual table, or a lakehouse collection path.
+- `extract_annual_stage_matrix(source; stages=build_stages())`: Returns `(stage_matrix, catch_matrix, years)` from a live model, an `(agent_df, model_df)` tuple, an annual table, or a project-local results collection.
 - `fit_generalized_leslie_model(stage_matrix, catch_matrix=zeros(size(stage_matrix)); stages=build_stages(), years=1:size(stage_matrix, 2))`: Calibrates the stage-transition projection matrix $\mathbf{A}$, dominant eigenvalue $\lambda$, damping ratio, reproductive values and elasticities into a `LeslieMatrixFit`.
 - `summarize_leslie_model(fit::LeslieMatrixFit)`: Formatted Leslie diagnostics ($\lambda$, $r$, damping ratio).
 - `compare_macro_models(annual_data, leslie_fit; lag=1)`: Three-way comparison (`MacroModelComparison`) of Schaefer, delay-difference and Leslie formulations on the same series.
@@ -659,11 +658,11 @@ Upon reaching morphometric maturity, individuals undergo their terminal molt; fe
 | | `domain_lon`, `domain_lat` | `[-65.0, -63.0]`, `[43.0, 45.0]` | Longitude and latitude extents (°) of the Tethys extraction domain. | `simulation.jl` |
 | | `time_range` | `["1993-01-01", "1993-12-31"]` | Calendar range of the Tethys extraction. | `simulation.jl` |
 | | `pelagic_depth` | `15.0` | Depth (m) defining the pelagic (larval) environmental layer. | `simulation.jl` |
-| | `temperature_source` | `"woa23"` | Tethys hydrography product for the bottom and surface temperature fields. | `simulation.jl` |
+| | `temperature_source` | `"woa23"` | Hydrography product used for bottom and surface temperature fields. | `simulation.jl` |
 | | `temperature_month` | `0` | Month selector for the hydrography extract. | `simulation.jl` |
-| | `bathymetry_source` | `"etopo2022"` | Tethys bathymetry product. | `simulation.jl` |
-| | `geodata_input_dir` | `"inputs"` | Run-local cache directory for downloaded Tethys inputs. | `simulation.jl` |
-| | `geodata_store_dir` | `"../lakehouse/TethysBio"` | Shared environmental store written by `assimilate_environmental_inputs`; an empty string falls back to `geodata_input_dir`. | `simulation.jl`, `assimilation.jl` |
+| | `bathymetry_source` | `"etopo2022"` | Bathymetry product used for the simulation grid. | `simulation.jl` |
+| | `geodata_input_dir` | `"inputs"` | Project-local cache directory for downloaded inputs. | `simulation.jl` |
+| | `geodata_store_dir` | `"data/environmental"` | Project-local environmental data directory written by `assimilate_environmental_inputs`. | `simulation.jl`, `assimilation.jl` |
 | **`[organism]`** | `max_stage_male/female` | `19`, `16` | Terminal developmental stage ceilings (instar 16 and 13 + 3 pelagic). | `types.jl`, `organism_dynamics.jl`, `simulation.jl` |
 | | `stage_labels` | Vector | Consistent plot and axis labels across the full life cycle. | `types.jl`, `gui.jl`, `visualization.jl` |
 | | `metabolic_rate_base` | `0.01` | Basal metabolic scaling coefficient. | `organism_dynamics.jl` |
@@ -754,7 +753,7 @@ Upon reaching morphometric maturity, individuals undergo their terminal molt; fe
 | | `no_take_proportion` | `0.0` | Fraction of the grid's cells partitioned into a no-take zone that the fishery does not harvest. | `simulation.jl` |
 | | `fishing_probability_daily`| `0.0` | Daily capture probability per legal male; master fishery switch. | `types.jl`, `simulation.jl` |
 | | `fishing_season_start/end`| `90.0`, `150.0` | Day-of-year window when the fishery is actively harvesting. | `types.jl`, `simulation.jl` |
-| **`[output]`** | `save`, `save_path` | `true`, `"simulation_results"` | Annual compressed Parquet collection persistence controls in the TethysBio lakehouse namespace. | `simulation.jl`, `cli.jl` |
+| **`[output]`** | `save`, `save_path` | `true`, `"simulation_results"` | Annual compressed Parquet collection persistence controls under the project-local `data/results` directory. | `simulation.jl`, `cli.jl` |
 | | `snapshot_day` | `274.0` | Day-of-year for annual demographic snapshot (~1 September). | `simulation.jl`, `cli.jl` |
 | | `frequency_days` | `365.0` | Sampling interval (days) between periodic observations. | `simulation.jl`, `cli.jl` |
 | | `plot`, `output_dir` | `false`, `"outputs"` | Diagnostic plotting controls and destination path. | `cli.jl`, `visualization.jl` |
@@ -863,4 +862,4 @@ scratch/verify_cli.jl       # the --temp_base / --temp_amplitude alias behaviour
 
 Work addressing the audit findings proceeds in logical dependency order. The primary resolution focuses on critical operational defects: correcting the properties lookup in the fishery harvest path (C1) and establishing non-periodic grid space boundaries (C3) to prevent artificial spatial wrapping. Next, the phase sequence between agent stepping and model stepping is harmonized (M3), followed by aligning initial cohort vectors with stage indices and validating seed sums (M1, M2).
 
-Subsequent updates restore legacy command-line argument aliases and ensure parity between parameter structs and TOML configuration files (M14, M15, M22). In the statistical and analytical layer, convergence criteria in macro-model optimization are strengthened and stage decomposition routines are verified (M7 through M12). Finally, plotting schemas are updated to ensure demographic telemetry fields match observation keys (M16, M17, M21), and environmental data assimilation contracts are formalized to guarantee consistent lakehouse storage and retrieval (C2, M19).
+Subsequent updates restore legacy command-line argument aliases and ensure parity between parameter structs and TOML configuration files (M14, M15, M22). In the statistical and analytical layer, convergence criteria in macro-model optimization are strengthened and stage decomposition routines are verified (M7 through M12). Finally, plotting schemas are updated to ensure demographic telemetry fields match observation keys (M16, M17, M21), and environmental data assimilation contracts are formalized to guarantee consistent project-local storage and retrieval (C2, M19).

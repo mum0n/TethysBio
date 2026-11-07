@@ -1,5 +1,5 @@
 # ==============================================================================
-#  assimilation.jl -- the environmental inputs, assimilated into a Tethys store
+#  assimilation.jl -- the environmental inputs stored with TethysBio
 # ==============================================================================
 #
 #  An IBM needs a world to run in: a sea floor, a bottom temperature, and a seasonal cycle of
@@ -13,16 +13,16 @@
 #
 #  The separation this file makes:
 #
-#      a published product   ETOPO 2022, WOA23 / GLORYS12V1, over HTTP
-#      lakehouse/TethysBio/       the assimilated store, Tethys-native, built once
-#      a run                 reads the store; writes its own results to its output dir
+#      a published product   ETOPO 2022, WOA23 over HTTP
+#      TethysBio/data/       the package-local assimilated store
+#      a run                 reads the local store and writes local results
 #
 #  Assimilation is idempotent, and it knows when to stop: a store artefact at least as new as
 #  the fetch that produced it is skipped. `force = true` re-fetches.
 #
 #  The layout is one directory per input rather than one archive per run:
 #
-#      lakehouse/TethysBio/
+#      data/environmental/
 #        bathymetry.zarr        the sea floor, from ETOPO 2022 through ERDDAP
 #        hydrography/           the 12-month climatological temperature and salinity
 #        manifest.toml          what was assimilated, from which product, when
@@ -34,32 +34,24 @@
 """
     TethysBio_store_root() -> String
 
-Where the assimilated environmental store lives: `projects/lakehouse/TethysBio`, beside the other
-halves' directories, so the lakehouse reads as one directory per package. `TethysBio_STORE_ROOT`
-overrides it for a machine with the lakehouse somewhere else.
+Where TethysBio's data lives. Environmental inputs, caches, and results are kept under the
+package's own `data` directory.
 """
 function TethysBio_store_root()::String
-    override = get(ENV, "TethysBio_STORE_ROOT", "")
-    isempty(override) || return abspath(override)
-    return Tethys.lakehouse_dir("TethysBio")
+    return tethysbio_data_path()
 end
 
 """
     environmental_store_dir(env_params) -> String
 
-The directory a run reads its environment from: `geodata_store_dir` when it is non-empty, and
-`geodata_input_dir` otherwise. Both are honoured because a configuration written before the
-store existed still says `inputs`, and honouring only one of them would silently move a run's
-inputs to a lakehouse it did not ask for.
-
-A configured path is resolved against this package's root rather than the working directory,
-and the lakehouse is accepted either inside the project (`lakehouse/...`) or beside it
-(`../lakehouse/...`), so the same configuration resolves the same way in either layout.
+The directory a run reads its environment from. Paths are resolved against the package root and
+rejected if they escape it.
 """
 function environmental_store_dir(env_params::EnvironmentParams)
     d = something(env_params.geodata_store_dir, "")
-    isempty(strip(d)) && return env_params.geodata_input_dir
-    return Tethys.project_lakehouse_path(d, _PROJECT_ROOT)
+    isempty(strip(d)) && (d = env_params.geodata_input_dir)
+    isempty(strip(d)) && (d = joinpath("data", "environmental"))
+    return tethysbio_project_path(d)
 end
 
 """
@@ -77,17 +69,18 @@ function environmental_input_status(env_params::EnvironmentParams)
     store = abspath(environmental_store_dir(env_params))
     lon_r = (Float64(env_params.domain_lon[1]), Float64(env_params.domain_lon[2]))
     lat_r = (Float64(env_params.domain_lat[1]), Float64(env_params.domain_lat[2]))
-    bathy = joinpath(store, "bathymetry.zarr")
+    bathy = local_bathymetry_path(store)
+    bathy_present = bathy !== nothing
     inputs = @NamedTuple{role::Symbol, product::String, where::String, present::Bool,
                          note::String}[
         (role = :bathymetry,
          product = env_params.bathymetry_source,
-         where = bathy,
-         present = isdir(bathy),
+         where = something(bathy, joinpath(store, "bathymetry.zarr")),
+         present = bathy_present,
          note = "sea floor, depth as max(0, -elevation)"),
         (role = :hydrography,
          product = env_params.temperature_source,
-         where = store,
+         where = something(local_hydrography_path(env_params, store), store),
          present = _hydrography_present(store, env_params),
          note = "bottom and pelagic temperature, 12-month climatology"),
     ]
@@ -108,9 +101,7 @@ is enough for a run that uses one; a run with `temperature_month = 0` uses all t
 twelve must be there.
 """
 function _hydrography_present(store::AbstractString, env_params::EnvironmentParams)
-    temp_src = env_params.temperature_source
-    hydro_target = joinpath(store, "boundary_$(temp_src).zarr")
-    return isdir(hydro_target)
+    return local_hydrography_path(env_params, store) !== nothing
 end
 
 
@@ -118,13 +109,7 @@ end
 """
     assimilate_environmental_inputs(env_params; verbose = true, force = false) -> NamedTuple
 
-Convert the published products this configuration names into the Tethys store, skipping
-anything already there.
-
-Two fetches, using exactly the calls a simulation makes — `fetch_erddap_bathymetry` and
-`fetch_boundary_hydrography` — so the assimilation and the ingestion cannot drift
-apart into two different ways of reading one product. The notebook's step is this function;
-the simulation's ingestion is the same functions called from the same directory.
+Fetch the configured environmental products into TethysBio's package-local data directory.
 
 Returns `(store_dir, written, skipped, manifest)`.
 """
@@ -147,82 +132,24 @@ function assimilate_environmental_inputs(env_params::EnvironmentParams;
     end
 
     # -- bathymetry ------------------------------------------------------------
-    bathy_target = joinpath(store, "bathymetry.zarr")
-    if force || !isdir(bathy_target)
-        central_candidates = [
-            Tethys.lakehouse_dir("Tethys", "nwa", "bathymetry.zarr"),
-            Tethys.lakehouse_dir("TethysFlow", "scotian_shelf", "inputs", "bathymetry_active.nc"),
-            Tethys.lakehouse_dir("GeoOceanModel", "scotian_shelf", "inputs", "bathymetry_active.nc")
-        ]
-        c_idx = findfirst(p -> ispath(p), central_candidates)
-        if c_idx !== nothing
-            src = central_candidates[c_idx]
-            verbose && println("  [assimilate] bathymetry: loading from $(src) via Tethys -> bathymetry.zarr")
-            ds_bathy = Tethys.load_dataset(src)
-            Tethys.save_dataset(bathy_target, ds_bathy; backend = :zarr)
-            push!(written, "bathymetry")
-        else
-            verbose && println("  [assimilate] bathymetry: no local store found; fetching via Tethys.load_dataset")
-            ds_bathy = Tethys.load_dataset(
-                "erddap://ETOPO_2022_v1_15s";
-                cache_dir = store,
-                bounds = (lon_range, lat_range),
-                verbose = verbose
-            )
-            Tethys.save_dataset(bathy_target, ds_bathy; backend = :zarr)
-            push!(written, "bathymetry")
-        end
+    bathy_target = local_bathymetry_path(store)
+    if force || bathy_target === nothing
+        bathy_target = fetch_local_bathymetry!(
+            env_params, store; force = force, verbose = verbose
+        )
+        push!(written, "bathymetry")
     else
         push!(skipped, "bathymetry")
         verbose && println("  [assimilate] bathymetry: already in the store, skipped")
     end
 
-    # -- hydrography, one month at a time ---------------------------------------
-    months = env_params.temperature_month == 0 ? (1:12) : (env_params.temperature_month,)
-    hydro_target = joinpath(store, "boundary_$(temp_src).zarr")
-    # Track what was actually assimilated, so the manifest does not mis-label a
-    # central-copy GLORYS subset as the configured product/bounds (M19).
-    hydro_product = string(temp_src)
-    hydro_domain = (lon_range, lat_range)
-    if force || !isdir(hydro_target)
-        central_hydro = [
-            Tethys.lakehouse_dir("TethysFlow", "scotian_shelf", "inputs",
-                                  "boundary_glorys_1993_-71.0_-53.0_40.0_48.5.zarr"),
-            Tethys.lakehouse_dir("GeoOceanModel", "scotian_shelf", "inputs",
-                                  "boundary_glorys_1993_-71.0_-53.0_40.0_48.5.zarr"),
-            Tethys.lakehouse_dir("Tethys", "glorys",
-                                  "boundary_glorys_1993_-71.0_-53.0_40.0_48.5.nc")
-        ]
-        h_idx = findfirst(p -> ispath(p), central_hydro)
-        if h_idx !== nothing
-            src_h = central_hydro[h_idx]
-            verbose && println("  [assimilate] hydrography: loading from $(src_h) via Tethys -> $(hydro_target)")
-            ds_hydro = occursin(".nc", src_h) ?
-                Tethys.load_dataset(src_h; backend = :ncdatasets) :
-                Tethys.load_dataset(src_h)
-            Tethys.save_dataset(hydro_target, ds_hydro; backend = :zarr)
-            push!(written, "hydrography")
-            hydro_product = "glorys12v1"
-            hydro_domain = ((-71.0, -53.0), (40.0, 48.5))
-        else
-            verbose && println("  [assimilate] hydrography: fetching $(temp_src) via Tethys.load_dataset")
-            scheme = temp_src === :woa23 ? "woa23://" : "copernicus://"
-            try
-                ds_hydro = Tethys.load_dataset(
-                    scheme;
-                    cache_dir = store,
-                    bounds = (lon_range, lat_range),
-                    month = env_params.temperature_month,
-                    verbose = verbose
-                )
-                if ds_hydro isa GeoDataset
-                    Tethys.save_dataset(hydro_target, ds_hydro; backend = :zarr)
-                    push!(written, "hydrography")
-                end
-            catch err
-                verbose && println("  [assimilate] hydrography: provider fetch skipped ($(err)), relying on in-situ Tethys stores")
-            end
-        end
+    # -- hydrography -----------------------------------------------------------
+    hydro_target = local_hydrography_path(env_params, store)
+    if force || hydro_target === nothing
+        hydro_target = fetch_local_hydrography!(
+            env_params, store; force = force, verbose = verbose
+        )
+        push!(written, "hydrography")
     else
         push!(skipped, "hydrography")
         verbose && println("  [assimilate] hydrography: already in the store, skipped")
@@ -236,10 +163,10 @@ function assimilate_environmental_inputs(env_params::EnvironmentParams;
         "inputs" => [
             Dict("role" => "bathymetry", "product" => env_params.bathymetry_source,
                  "where" => bathy_target),
-            Dict("role" => "hydrography", "product" => hydro_product,
+            Dict("role" => "hydrography", "product" => string(temp_src),
                  "where" => hydro_target, "months" => [env_params.temperature_month],
-                 "domain" => Dict("lon" => [hydro_domain[1][1], hydro_domain[1][2]],
-                                  "lat" => [hydro_domain[2][1], hydro_domain[2][2]])),
+                 "domain" => Dict("lon" => [lon_range[1], lon_range[2]],
+                                  "lat" => [lat_range[1], lat_range[2]])),
 
         ],
     )

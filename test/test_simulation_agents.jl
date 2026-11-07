@@ -134,8 +134,9 @@ include("test_fixtures.jl")
         @test all(iszero, ann.catch_total)   # fishing_probability_daily defaults to 0
         @test :surplus_production_legal in propertynames(ann)
 
-        # Save and reload a compressed Parquet lakehouse collection.
-        tmp_collection = joinpath(mktempdir(), "simulation_results")
+        # Save and reload a compressed Parquet collection inside the project.
+        tmp_root = mktempdir(TethysBio._PROJECT_ROOT)
+        tmp_collection = joinpath(tmp_root, "simulation_results")
         saved_path = save_simulation_results(
             tmp_collection,
             agent_df,
@@ -170,8 +171,8 @@ include("test_fixtures.jl")
         @test nrow(ann_freq90) == 4
         @test ann_freq90.time == [90.0, 180.0, 270.0, 360.0]
 
-        # Persist a subannual sampling interval through the same lakehouse API.
-        tmp_freq_collection = joinpath(mktempdir(), "subannual_results")
+        # Persist a subannual sampling interval through the same local API.
+        tmp_freq_collection = joinpath(tmp_root, "subannual_results")
         save_simulation_results(
             tmp_freq_collection,
             agent_df,
@@ -182,6 +183,7 @@ include("test_fixtures.jl")
         loaded_freq_df = load_simulation_results(tmp_freq_collection)
         @test nrow(loaded_freq_df) == 3
         @test loaded_freq_df.time == [120.0, 240.0, 360.0]
+        rm(tmp_root; recursive = true)
 
         # CLI sampling-interval and snapshot-day parsing, exact names only
         cli_parsed_freq = parse_cli_args(["--frequency_days=90.0"])

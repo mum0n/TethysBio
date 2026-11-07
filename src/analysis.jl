@@ -798,29 +798,27 @@ function summarize_stock_recruitment(sr_df::DataFrame; fits = nothing)
 end
 
 # ==============================================================================
-# Tethys Lakehouse Persistence & Annual Production Extraction
+# Package-Local Persistence & Annual Production Extraction
 # ==============================================================================
 
 """
     resolve_simulation_results_path(path::AbstractString) -> String
 
-Resolve a results collection path. Relative paths live beneath
-`Tethys.lakehouse_dir("TethysBio")`; absolute paths are explicit overrides.
-Relative paths that traverse outside the TethysBio namespace are rejected.
+Resolve a results collection path beneath `data/results`. Paths outside the project are rejected.
 """
 function resolve_simulation_results_path(path::AbstractString)::String
     value = strip(String(path))
     isempty(value) && throw(ArgumentError("simulation results path cannot be empty"))
-    isabspath(value) && return normpath(value)
-
-    namespace = normpath(Tethys.lakehouse_dir("TethysBio"))
-    resolved = normpath(joinpath(namespace, value))
-    relative = relpath(resolved, namespace)
-    components = split(replace(relative, '\\' => '/'), '/')
-    if relative == "." || relative == ".." || first(components) == ".."
-        throw(ArgumentError("relative simulation results path must remain inside $(namespace): $(path)"))
+    namespace = tethysbio_data_path("results")
+    if isabspath(value)
+        return tethysbio_project_path(value)
     end
-    return resolved
+    relative = normpath(value)
+    if relative == "." || relative == ".." ||
+        startswith(relative, "..$(Base.Filesystem.path_separator)")
+        throw(ArgumentError("simulation results paths must remain inside $(namespace): $(path)"))
+    end
+    return tethysbio_project_path(joinpath(namespace, relative))
 end
 
 function _simulation_results_metadata(
@@ -847,20 +845,15 @@ function _write_annual_production_collection(
     meta::AbstractDict
 )
     collection = resolve_simulation_results_path(path)
-    storage = Tethys.open_geostorage(
-        joinpath(collection, "_collection.parquet");
-        backend = :geoparquet,
-        create = true
-    )
-    try
-        Tethys.write_storage_variable!(storage, "annual_production", ann_df)
-        Tethys.write_storage_variable!(
-            storage,
-            "run_metadata",
-            _simulation_results_metadata(dt_year, frequency_days, snapshot_day, meta)
-        )
-    finally
-        Tethys.close_geostorage(storage)
+    mkpath(collection)
+    annual_path = joinpath(collection, "annual_production.parquet")
+    open(annual_path; write = true, create = true, truncate = true) do io
+        Parquet2.writefile(io, annual_path, ann_df; compression_codec = :zstd)
+    end
+    metadata_path = joinpath(collection, "run_metadata.parquet")
+    metadata = _simulation_results_metadata(dt_year, frequency_days, snapshot_day, meta)
+    open(metadata_path; write = true, create = true, truncate = true) do io
+        Parquet2.writefile(io, metadata_path, metadata; compression_codec = :zstd)
     end
     return collection
 end
@@ -869,10 +862,9 @@ end
     save_simulation_results(path, agent_df, model_df; dt_year=365.0,
                             frequency_days=dt_year, snapshot_day=274.0, meta=Dict())
 
-Extract annual production indicators and save them as compressed Parquet tables in a
-Tethys lakehouse collection. Relative `path` values resolve below the TethysBio
-lakehouse namespace; absolute paths explicitly override that location. The
-collection contains `annual_production.parquet` and `run_metadata.parquet`.
+Extract annual production indicators and save them as compressed Parquet tables inside
+TethysBio's `data/results` directory. The collection contains `annual_production.parquet`
+and `run_metadata.parquet`.
 
 # Returns
 The absolute path to the collection directory.
@@ -906,24 +898,19 @@ end
 """
     load_simulation_results(path) -> DataFrame
 
-Load the `annual_production` Parquet table from a TethysBio lakehouse
-collection. Relative paths resolve beneath `Tethys.lakehouse_dir("TethysBio")`;
-absolute paths are explicit overrides.
+Load the `annual_production` Parquet table from a package-local results collection.
 """
 function load_simulation_results(path::AbstractString)
     collection = resolve_simulation_results_path(path)
     table_path = joinpath(collection, "annual_production.parquet")
     isfile(table_path) || error("Annual production Parquet table not found: $(table_path)")
-    storage = Tethys.open_geostorage(
-        joinpath(collection, "_collection.parquet");
-        backend = :geoparquet,
-        read_only = true,
-        create = false
-    )
+    dataset = open(table_path, "r") do io
+        Parquet2.Dataset(io)
+    end
     try
-        return Tethys.read_storage_variable(storage, "annual_production")
+        return DataFrame(dataset; copycols = true)
     finally
-        Tethys.close_geostorage(storage)
+        close(dataset)
     end
 end
 
@@ -2398,7 +2385,7 @@ end
 Extract or reconstruct an S x T stage abundance matrix from simulation results.
 Supports:
 - `DataFrame`: Annual production table with `:total_numbers` and `:legal_numbers`.
-- `AbstractString`: Tethys lakehouse collection path.
+- `AbstractString`: TethysBio package-local results collection path.
 - `StandardABM`: Running simulation model.
 
 # Arguments
@@ -4185,4 +4172,3 @@ function summarize_empirical_model(
     end
     println(io, "="^78)
 end
-

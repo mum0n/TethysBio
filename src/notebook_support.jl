@@ -26,7 +26,6 @@ using CairoMakie
 using DataFrames
 using Agents
 using Statistics
-using Tethys
 using Interpolations
 
 
@@ -56,12 +55,17 @@ end
 # ------------------------------------------------------------------------------
 
 """
-    aoi_coords_widget(; default_lon = -63.5, default_lat = 44.5) -> String
+    aoi_coords_widget(; default_lon = -63.5, default_lat = 44.5,
+                      standalone = false) -> String
 
 Construct the HTML and embedded JavaScript string for the interactive area of
 interest (AOI) coordinate selector on the Scotian Shelf & Gulf domain.
 """
-function aoi_coords_widget(; default_lon::Float64 = -63.5, default_lat::Float64 = 44.5)
+function aoi_coords_widget(;
+    default_lon::Float64 = -63.5,
+    default_lat::Float64 = 44.5,
+    standalone::Bool = false
+)
     lon_s = @sprintf("%.2f", default_lon)
     lat_s = @sprintf("%.2f", default_lat)
     return """
@@ -107,7 +111,8 @@ function aoi_coords_widget(; default_lon::Float64 = -63.5, default_lat::Float64 
   </div>
 
 <script>
-const container = currentScript.parentElement;
+(() => {
+const container = document.currentScript.parentElement;
 const s_lon = container.querySelector('#slider_lon');
 const s_lat = container.querySelector('#slider_lat');
 const l_lon = container.querySelector('#lon_label');
@@ -117,6 +122,9 @@ const mapDiv = container.querySelector('#aoi_map');
 
 let currentVal = { lon: $(lon_s), lat: $(lat_s) };
 container.value = currentVal;
+if ($(standalone) && window.parent !== window) {
+  window.parent.postMessage({ type: 'aoi', value: currentVal }, '*');
+}
 
 function updateCoordinates(lon, lat, dispatch = true, updateMarker = true) {
   lon = Math.min(-57.5, Math.max(-66.5, Math.round(lon * 100) / 100));
@@ -280,6 +288,7 @@ function setupLeafletMap() {
 
 initMap();
 updateCoordinates($(lon_s), $(lat_s), false, false);
+})();
 </script>
 </div>
 """
@@ -295,8 +304,8 @@ Estimate seabed depths over a geographic area centred at `(lon, lat)` spanning
 At latitude `lat`, 1 degree of latitude corresponds to ~111,139 m, and 1 degree of
 longitude corresponds to ~111,139 * cos(lat * π / 180) m.
 
-Searches local store candidates via `Tethys.load_dataset` and continuous interpolation
-via `Tethys.get_bathymetry_interpolator`. If offline or missing, defaults to the
+Searches TethysBio's local data directory and uses continuous interpolation. If data is
+missing, defaults to the
 regional shelf analytical bathymetry evaluated over the sampled grid offsets.
 
 # Arguments
@@ -332,10 +341,10 @@ function estimate_aoi_bathymetry(
     lat_pts = range(lat - dlat, lat + dlat; length = n_points)
 
     candidate_paths = [
-        Tethys.lakehouse_dir("Tethys", "bathymetry", "nwa_bathymetry.nc"),
-        Tethys.lakehouse_dir("TethysFlow", "scotian_shelf", "inputs", "bathymetry_active.nc"),
-        Tethys.lakehouse_dir("GeoOceanModel", "scotian_shelf", "inputs", "bathymetry_active.nc"),
-        Tethys.lakehouse_dir("Tethys", "nwa", "bathymetry.zarr")
+        tethysbio_data_path("environmental", "bathymetry.zarr"),
+        tethysbio_data_path("environmental", "bathymetry.nc"),
+        tethysbio_data_path("inputs", "bathymetry.zarr"),
+        tethysbio_data_path("inputs", "bathymetry.nc")
     ]
     c_idx = findfirst(p -> ispath(p), candidate_paths)
 
@@ -344,9 +353,9 @@ function estimate_aoi_bathymetry(
         try
             candidate_file = candidate_paths[c_idx]
             ds_bathy = occursin(".nc", candidate_file) ?
-                Tethys.load_dataset(candidate_file; backend = :ncdatasets) :
-                Tethys.load_dataset(candidate_file)
-            bathy_itp = Tethys.get_bathymetry_interpolator(ds_bathy)
+                load_environmental_dataset(candidate_file; backend = :ncdatasets) :
+                load_environmental_dataset(candidate_file)
+            bathy_itp = environmental_bathymetry_interpolator(ds_bathy)
             for j in 1:n_points, i in 1:n_points
                 val = bathy_itp(lon_pts[i], lat_pts[j])
                 depth_mat[i, j] = isnan(val) ? 0.0 : max(0.0, -val)
@@ -379,14 +388,42 @@ function estimate_aoi_bathymetry(
 end
 
 """
-    parameter_steering_sliders_widget(; default_years = 30, default_interval = 10) -> String
+    parameter_steering_sliders_widget(; default_years = 30, default_interval = 10,
+                                      defaults = Dict(), standalone = false) -> String
 
 Construct the HTML and embedded JavaScript string for the two-column set of
 simulation and environmental sliders, fishery thresholds, and biological process toggles.
-Synchronizes with `window._TethysBio_state` so that parameter adjustments seamlessly update
-the model state and notify Pluto subscribers.
+Synchronizes with `window._TethysBio_state`; in standalone mode, changes are also
+posted to the containing dashboard frame.
 """
-function parameter_steering_sliders_widget(; default_years::Int = 30, default_interval::Int = 10)
+function parameter_steering_sliders_widget(;
+    default_years::Int = 30,
+    default_interval::Int = 10,
+    defaults::AbstractDict = Dict{Symbol, Any}(),
+    standalone::Bool = false
+)
+    default_value(key, fallback) = get(defaults, key, fallback)
+    grid_default = clamp(round(Int, default_value(:grid_nx, 50) / 10) * 10, 30, 150)
+    temp_offset_default = clamp(Float64(default_value(:temp_offset, 0.0)), -5.0, 5.0)
+    temp_multiplier_default = clamp(Float64(default_value(:temp_multiplier, 1.0)), 0.0, 3.0)
+    temp_noise_default = clamp(Float64(default_value(:temp_noise_sd, 0.0)), 0.0, 1.5)
+    habitat_offset_default = clamp(Float64(default_value(:habitat_offset, 0.0)), -1.0, 1.0)
+    habitat_multiplier_default = clamp(Float64(default_value(:habitat_multiplier, 1.0)), 0.0, 3.0)
+    food_max_default = clamp(Float64(default_value(:food_max, 10.0)), 4.0, 20.0)
+    food_rate_default = clamp(Float64(default_value(:food_replenishment_rate, 0.1)), 0.0, 1.0)
+    capacity_default = clamp(round(Int, default_value(:benthic_carrying_capacity, 6000) / 1000) * 1000, 1000, 20000)
+    fishing_start_default = clamp(round(Int, default_value(:fishing_season_start, 90)), 1, 365)
+    fishing_end_default = clamp(round(Int, default_value(:fishing_season_end, 150)), 1, 365)
+    fishing_rate_default = clamp(Float64(default_value(:fishing_probability_daily, 0.002)), 0.0, 0.01)
+    legal_size_default = clamp(Float64(default_value(:legal_size_male, 95.0)), 70.0, 105.0)
+    toggle_defaults = Dict(
+        :energetics => Bool(default_value(:use_energetics, true)),
+        :thermal => Bool(default_value(:use_thermal_stress, true)),
+        :cannibalism => Bool(default_value(:use_cannibalism, false)),
+        :senescence => Bool(default_value(:use_senescence, true)),
+        :movement => Bool(default_value(:use_movement, true)),
+        :reproduction => Bool(default_value(:use_reproduction, true))
+    )
     return """
 <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
             background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 18px; margin: 12px 0; max-width: 820px;">
@@ -401,65 +438,73 @@ function parameter_steering_sliders_widget(; default_years::Int = 30, default_in
       <div style="margin-bottom: 10px;">
         <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">
           <span>Grid Resolution (cells):</span>
-          <span id="val_grid" style="font-weight: 600; font-family: monospace;">50</span>
+          <span id="val_grid" style="font-weight: 600; font-family: monospace;">$(grid_default)</span>
         </div>
-        <input type="range" id="ctrl_grid" min="30" max="150" step="10" value="50" style="width: 100%;">
+        <input type="range" id="ctrl_grid" min="30" max="150" step="10" value="$(grid_default)" style="width: 100%;">
       </div>
 
       <div style="margin-bottom: 10px;">
         <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">
           <span>Base Bottom Temp Offset (°C):</span>
-          <span id="val_temp_offset" style="font-weight: 600; font-family: monospace;">0.0</span>
+          <span id="val_temp_offset" style="font-weight: 600; font-family: monospace;">$(temp_offset_default)</span>
         </div>
-        <input type="range" id="ctrl_temp_offset" min="-5.0" max="5.0" step="0.5" value="0.0" style="width: 100%;">
+        <input type="range" id="ctrl_temp_offset" min="-5.0" max="5.0" step="0.5" value="$(temp_offset_default)" style="width: 100%;">
       </div>
 
       <div style="margin-bottom: 10px;">
         <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">
           <span>Seasonal Temp Multiplier:</span>
-          <span id="val_temp_mult" style="font-weight: 600; font-family: monospace;">1.0</span>
+          <span id="val_temp_mult" style="font-weight: 600; font-family: monospace;">$(temp_multiplier_default)</span>
         </div>
-        <input type="range" id="ctrl_temp_mult" min="0.0" max="3.0" step="0.1" value="1.0" style="width: 100%;">
+        <input type="range" id="ctrl_temp_mult" min="0.0" max="3.0" step="0.1" value="$(temp_multiplier_default)" style="width: 100%;">
       </div>
 
       <div style="margin-bottom: 10px;">
         <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">
           <span>Thermal Spatial Noise (SD):</span>
-          <span id="val_temp_noise" style="font-weight: 600; font-family: monospace;">0.00 °C</span>
+          <span id="val_temp_noise" style="font-weight: 600; font-family: monospace;">$(temp_noise_default) °C</span>
         </div>
-        <input type="range" id="ctrl_temp_noise" min="0.0" max="1.5" step="0.05" value="0.0" style="width: 100%;">
+        <input type="range" id="ctrl_temp_noise" min="0.0" max="1.5" step="0.05" value="$(temp_noise_default)" style="width: 100%;">
       </div>
 
       <div style="margin-bottom: 10px;">
         <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">
           <span>Habitat Suitability Offset:</span>
-          <span id="val_hab_offset" style="font-weight: 600; font-family: monospace;">0.00</span>
+          <span id="val_hab_offset" style="font-weight: 600; font-family: monospace;">$(habitat_offset_default)</span>
         </div>
-        <input type="range" id="ctrl_hab_offset" min="-1.0" max="1.0" step="0.05" value="0.0" style="width: 100%;">
+        <input type="range" id="ctrl_hab_offset" min="-1.0" max="1.0" step="0.05" value="$(habitat_offset_default)" style="width: 100%;">
       </div>
 
       <div style="margin-bottom: 10px;">
         <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">
           <span>Habitat Multiplier:</span>
-          <span id="val_hab_mult" style="font-weight: 600; font-family: monospace;">1.0×</span>
+          <span id="val_hab_mult" style="font-weight: 600; font-family: monospace;">$(habitat_multiplier_default)×</span>
         </div>
-        <input type="range" id="ctrl_hab_mult" min="0.0" max="3.0" step="0.1" value="1.0" style="width: 100%;">
+        <input type="range" id="ctrl_hab_mult" min="0.0" max="3.0" step="0.1" value="$(habitat_multiplier_default)" style="width: 100%;">
       </div>
 
       <div style="margin-bottom: 10px;">
         <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">
           <span>Benthic Food Max:</span>
-          <span id="val_food" style="font-weight: 600; font-family: monospace;">10.0</span>
+          <span id="val_food" style="font-weight: 600; font-family: monospace;">$(food_max_default)</span>
         </div>
-        <input type="range" id="ctrl_food" min="4.0" max="20.0" step="1.0" value="10.0" style="width: 100%;">
+        <input type="range" id="ctrl_food" min="4.0" max="20.0" step="1.0" value="$(food_max_default)" style="width: 100%;">
+      </div>
+
+      <div style="margin-bottom: 10px;">
+        <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">
+          <span>Food Replenishment Rate:</span>
+          <span id="val_food_rate" style="font-weight: 600; font-family: monospace;">$(food_rate_default)</span>
+        </div>
+        <input type="range" id="ctrl_food_rate" min="0.0" max="1.0" step="0.01" value="$(food_rate_default)" style="width: 100%;">
       </div>
 
       <div style="margin-bottom: 10px;">
         <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">
           <span>Carrying Capacity K:</span>
-          <span id="val_k" style="font-weight: 600; font-family: monospace;">6000</span>
+          <span id="val_k" style="font-weight: 600; font-family: monospace;">$(capacity_default)</span>
         </div>
-        <input type="range" id="ctrl_k" min="1000" max="20000" step="1000" value="6000" style="width: 100%;">
+        <input type="range" id="ctrl_k" min="1000" max="20000" step="1000" value="$(capacity_default)" style="width: 100%;">
       </div>
 
       <div>
@@ -484,33 +529,33 @@ function parameter_steering_sliders_widget(; default_years::Int = 30, default_in
         <div style="margin-bottom: 10px;">
           <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">
             <span>Fishing Start (Day):</span>
-            <span id="val_fish_start" style="font-weight: 600; font-family: monospace;">90</span>
+            <span id="val_fish_start" style="font-weight: 600; font-family: monospace;">$(fishing_start_default)</span>
           </div>
-          <input type="range" id="ctrl_fish_start" min="1" max="365" step="1" value="90" style="width: 100%;">
+          <input type="range" id="ctrl_fish_start" min="1" max="365" step="1" value="$(fishing_start_default)" style="width: 100%;">
         </div>
 
         <div style="margin-bottom: 10px;">
           <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">
             <span>Fishing End (Day):</span>
-            <span id="val_fish_end" style="font-weight: 600; font-family: monospace;">150</span>
+            <span id="val_fish_end" style="font-weight: 600; font-family: monospace;">$(fishing_end_default)</span>
           </div>
-          <input type="range" id="ctrl_fish_end" min="1" max="365" step="1" value="150" style="width: 100%;">
+          <input type="range" id="ctrl_fish_end" min="1" max="365" step="1" value="$(fishing_end_default)" style="width: 100%;">
         </div>
 
         <div style="margin-bottom: 10px;">
           <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">
             <span>Daily Harvest Probability:</span>
-            <span id="val_fish_rate" style="font-weight: 600; font-family: monospace;">0.0020</span>
+            <span id="val_fish_rate" style="font-weight: 600; font-family: monospace;">$(fishing_rate_default)</span>
           </div>
-          <input type="range" id="ctrl_fish_rate" min="0.0" max="0.01" step="0.0005" value="0.002" style="width: 100%;">
+          <input type="range" id="ctrl_fish_rate" min="0.0" max="0.01" step="0.0005" value="$(fishing_rate_default)" style="width: 100%;">
         </div>
 
         <div>
           <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">
             <span>Legal Male Size Threshold:</span>
-            <span id="val_legal_size" style="font-weight: 600; font-family: monospace;">95.0 mm</span>
+            <span id="val_legal_size" style="font-weight: 600; font-family: monospace;">$(legal_size_default) mm</span>
           </div>
-          <input type="range" id="ctrl_legal_size" min="70.0" max="105.0" step="1.0" value="95.0" style="width: 100%;">
+          <input type="range" id="ctrl_legal_size" min="70.0" max="105.0" step="1.0" value="$(legal_size_default)" style="width: 100%;">
         </div>
       </div>
 
@@ -521,27 +566,27 @@ function parameter_steering_sliders_widget(; default_years::Int = 30, default_in
 
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 12px;">
           <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-            <input type="checkbox" id="tog_energetics" checked>
+            <input type="checkbox" id="tog_energetics" $(toggle_defaults[:energetics] ? "checked" : "")>
             <span>Bioenergetics</span>
           </label>
           <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-            <input type="checkbox" id="tog_thermal" checked>
+            <input type="checkbox" id="tog_thermal" $(toggle_defaults[:thermal] ? "checked" : "")>
             <span>Thermal Stress</span>
           </label>
           <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-            <input type="checkbox" id="tog_cannibalism">
+            <input type="checkbox" id="tog_cannibalism" $(toggle_defaults[:cannibalism] ? "checked" : "")>
             <span>Cannibalism</span>
           </label>
           <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-            <input type="checkbox" id="tog_senescence" checked>
+            <input type="checkbox" id="tog_senescence" $(toggle_defaults[:senescence] ? "checked" : "")>
             <span>Senescence</span>
           </label>
           <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-            <input type="checkbox" id="tog_movement" checked>
+            <input type="checkbox" id="tog_movement" $(toggle_defaults[:movement] ? "checked" : "")>
             <span>Taxis Movement</span>
           </label>
           <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-            <input type="checkbox" id="tog_reproduction" checked>
+            <input type="checkbox" id="tog_reproduction" $(toggle_defaults[:reproduction] ? "checked" : "")>
             <span>Reproduction</span>
           </label>
         </div>
@@ -550,7 +595,8 @@ function parameter_steering_sliders_widget(; default_years::Int = 30, default_in
   </div>
 
 <script>
-const container = currentScript.parentElement;
+(() => {
+const container = document.currentScript.parentElement;
 
 const c_grid = container.querySelector('#ctrl_grid');
 const c_toffset = container.querySelector('#ctrl_temp_offset');
@@ -559,6 +605,7 @@ const c_tnoise = container.querySelector('#ctrl_temp_noise');
 const c_hab_offset = container.querySelector('#ctrl_hab_offset');
 const c_hab_mult = container.querySelector('#ctrl_hab_mult');
 const c_food = container.querySelector('#ctrl_food');
+const c_food_rate = container.querySelector('#ctrl_food_rate');
 const c_k = container.querySelector('#ctrl_k');
 const c_layer = container.querySelector('#ctrl_layer');
 const c_fstart = container.querySelector('#ctrl_fish_start');
@@ -612,6 +659,7 @@ function getSlidersState() {
     habitat_multiplier: hab_m,
     background_layer: c_layer.value,
     food_max: parseFloat(c_food.value),
+    food_replenishment_rate: parseFloat(c_food_rate.value),
     benthic_carrying_capacity: parseFloat(c_k.value),
     fishing_season_start: parseFloat(c_fstart.value),
     fishing_season_end: parseFloat(c_fend.value),
@@ -636,6 +684,7 @@ function updateSliders() {
   container.querySelector('#val_hab_offset').innerText = (parseFloat(c_hab_offset.value) >= 0 ? "+" : "") + parseFloat(c_hab_offset.value).toFixed(2);
   container.querySelector('#val_hab_mult').innerText = parseFloat(c_hab_mult.value).toFixed(1) + "×";
   container.querySelector('#val_food').innerText = parseFloat(c_food.value).toFixed(1);
+  container.querySelector('#val_food_rate').innerText = parseFloat(c_food_rate.value).toFixed(2);
   container.querySelector('#val_k').innerText = c_k.value;
   container.querySelector('#val_fish_start').innerText = c_fstart.value;
   container.querySelector('#val_fish_end').innerText = c_fend.value;
@@ -644,13 +693,16 @@ function updateSliders() {
 
   container.value = getSlidersState();
   container.dispatchEvent(new CustomEvent('input', { bubbles: true, composed: true }));
+  if ($(standalone) && window.parent !== window) {
+    window.parent.postMessage({ type: 'parameters', value: container.value }, '*');
+  }
   if (s.transportContainer) {
     s.transportContainer.value = getSlidersState();
     s.transportContainer.dispatchEvent(new CustomEvent('input', { bubbles: true, composed: true }));
   }
 }
 
-[c_grid, c_toffset, c_tmult, c_tnoise, c_hab_offset, c_hab_mult, c_food, c_k, c_fstart, c_fend, c_frate, c_lsize].forEach(el => {
+[c_grid, c_toffset, c_tmult, c_tnoise, c_hab_offset, c_hab_mult, c_food, c_food_rate, c_k, c_fstart, c_fend, c_frate, c_lsize].forEach(el => {
   if (el) el.addEventListener('input', updateSliders);
 });
 [c_layer, t_energetics, t_thermal, t_cannibalism, t_senescence, t_movement, t_reproduction].forEach(el => {
@@ -658,6 +710,7 @@ function updateSliders() {
 });
 
 container.value = getSlidersState();
+})();
 </script>
 </div>
 """
@@ -670,7 +723,11 @@ Construct the standalone HTML and embedded JavaScript string for the transport c
 (Start, Step, Pause, Stop/Reset, Rewind, Update Interval, and Duration in Years).
 Positioned below Model Initialization to steer the simulation execution loop.
 """
-function simulation_transport_widget(; default_interval::Int = 10, default_years::Int = 30)
+function simulation_transport_widget(;
+    default_interval::Int = 10,
+    default_years::Int = 30,
+    standalone::Bool = false
+)
     return """
 <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
             background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 14px 18px; margin: 12px 0; max-width: 820px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
@@ -715,7 +772,8 @@ function simulation_transport_widget(; default_interval::Int = 10, default_years
   </div>
 
 <script>
-const container = currentScript.parentElement;
+(() => {
+const container = document.currentScript.parentElement;
 
 const c_years = container.querySelector('#ctrl_years');
 const inp_interval = container.querySelector('#ctrl_update_interval');
@@ -791,6 +849,9 @@ function dispatchTransportChange() {
   if (s.slidersContainer) {
     s.slidersContainer.value = state;
     s.slidersContainer.dispatchEvent(new CustomEvent('input', { bubbles: true, composed: true }));
+  }
+  if ($(standalone) && window.parent !== window) {
+    window.parent.postMessage({ type: 'transport', value: state }, '*');
   }
 }
 
@@ -880,6 +941,7 @@ inp_interval.addEventListener('change', () => {
 
 container.value = getTransportState();
 updateBadge();
+})();
 </script>
 </div>
 """

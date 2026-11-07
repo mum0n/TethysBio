@@ -68,9 +68,9 @@ TethysBio/
 
 ## Environmental Data Assimilation
 
-The spatial simulation lattice requires bottom bathymetry and hydrographic thermal fields. These data are obtained from published environmental datasets, including ETOPO 2022 bathymetry and World Ocean Atlas 2023 (or GLORYS12V1) hydrography, and assimilated into a persistent data lakehouse via `Tethys`.
+TethysBio is independent of Tethys and shared lakehouse stores. Environmental inputs, downloaded caches, simulation results, plots, and notebook caches are stored under this project in `data/`, `outputs/`, and `scratch/`. Paths that escape the project directory are rejected.
 
-The lakehouse root is resolved hierarchically through environment variables (`TethysBio_STORE_ROOT`, `GEODATA_LAKEHOUSE`), preferences configured in `LocalPreferences.toml`, user configuration in `~/.geodata/storage.toml`, or local repository proximity fallbacks. Programmatic interaction provides functions to inspect input availability (`environmental_input_status`), download missing products (`assimilate_environmental_inputs`), and retrieve spatial arrays for simulation grids (`read_assimilated_environment`). Assimilation operations are idempotent, bypassing existing local data.
+Bathymetry and hydrography are read from `data/environmental/` and `data/inputs/`. Missing ETOPO 2022 bathymetry and WOA23 climatology can be downloaded directly into the local data directory. `environmental_input_status` reports local availability, `assimilate_environmental_inputs` fetches missing data, and `read_assimilated_environment` returns the fields used by the simulation. The default configuration uses synthetic environmental fields and does not download data.
 
 ## Life-History Formulation and Mathematical Mechanics
 
@@ -120,9 +120,9 @@ The simulation script (`scripts/organism_ibm.jl`) accepts exact parameter names 
 julia --project=. scripts/organism_ibm.jl --config=configs/snowcrab.toml --days=730 --save
 ```
 
-Common options include `--days` for simulated duration, `--n_agents` for initial population size, `--grid` for spatial lattice dimensions, `--temp_offset` for baseline thermal shifts, `--fishing_probability_daily` for commercial harvest rates, and `--save` for writing results directly to the lakehouse.
+Common options include `--days` for simulated duration, `--n_agents` for initial population size, `--grid` for spatial lattice dimensions, `--temp_offset` for baseline thermal shifts, `--fishing_probability_daily` for commercial harvest rates, and `--save` for writing results under `data/results`.
 
-Simulation results are serialized as Zstd-compressed Parquet files in the lakehouse store (`simulation_results/annual_production.parquet` and `run_metadata.parquet`). Stored outputs can be loaded directly for post-hoc macro-ecological model fitting:
+Simulation results are serialized as Zstd-compressed Parquet files under `data/results/` (`simulation_results/annual_production.parquet` and `run_metadata.parquet`). Stored outputs can be loaded directly for post-hoc macro-ecological model fitting:
 
 ```powershell
 julia --project=. scripts/fit_macro_models.jl --file=simulation_results --retro
