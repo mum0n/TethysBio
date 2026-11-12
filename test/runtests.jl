@@ -11,7 +11,7 @@ Usage:
     julia --project=. test/runtests.jl config       # Configuration & parameter integrity
     julia --project=. test/runtests.jl simulation   # Agent bioenergetics, dispersal & steps
     julia --project=. test/runtests.jl vis          # Visualization, plots & GUI dashboard
-    julia --project=. test/runtests.jl habitat      # Habitat suitability & Tethys integration
+    julia --project=. test/runtests.jl habitat      # Habitat suitability & environmental integration
 """
 
 using Test
@@ -22,7 +22,7 @@ const AVAILABLE_SEGMENTS = Dict{Symbol, NamedTuple{(:title, :file), Tuple{String
     :config     => ("Configuration, CLI Parsing, and Parameter Validation", "test_config_parameters.jl"),
     :simulation => ("Agent Simulation, Energetics, Mortality, and Dispersal", "test_simulation_agents.jl"),
     :vis        => ("Visualization Tools, Plots, and GUI Dashboard", "test_visualization_gui.jl"),
-    :habitat    => ("Habitat Suitability and Tethys Environmental Integration", "test_habitat_environment.jl"),
+    :habitat    => ("Habitat Suitability and Environmental Integration", "test_habitat_environment.jl"),
     :html       => ("HTML Dashboard Configuration and Controls", "test_html_dashboard.jl"),
 )
 

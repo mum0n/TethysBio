@@ -55,58 +55,62 @@ end
 # ------------------------------------------------------------------------------
 
 """
-    aoi_coords_widget(; default_lon = -63.5, default_lat = 44.5,
-                      standalone = false) -> String
+    aoi_coords_widget(; default_lon = -59.0, default_lat = 45.0,
+                      default_span_km = 50.0, standalone = false) -> String
 
 Construct the HTML and embedded JavaScript string for the interactive area of
-interest (AOI) coordinate selector on the Scotian Shelf & Gulf domain.
+interest (AOI) coordinate and bounding box selector on the Scotian Shelf & Gulf domain.
 """
 function aoi_coords_widget(;
-    default_lon::Float64 = -63.5,
-    default_lat::Float64 = 44.5,
+    default_lon::Float64 = -59.0,
+    default_lat::Float64 = 45.0,
+    default_span_km::Float64 = 50.0,
     standalone::Bool = false
 )
     lon_s = @sprintf("%.2f", default_lon)
     lat_s = @sprintf("%.2f", default_lat)
+    span_s = @sprintf("%.0f", default_span_km)
     return """
-<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 820px; margin: 0 0 10px 0; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; width: 100%; margin: 0 0 12px 0; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); box-sizing: border-box;">
   <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
     <span style="font-size: 13px; font-weight: 700; color: #1e293b;">
-      Scotian Shelf & Gulf Domain Coordinate Selection
+      Scotian Shelf & Gulf Domain Coordinate Selection (Area of Interest)
     </span>
-    <span id="coord_display" style="font-size: 12px; font-family: monospace; color: #0f172a; background: #e2e8f0; padding: 3px 8px; border-radius: 4px; font-weight: 600;">
+    <span id="coord_display" style="font-size: 12px; font-family: monospace; color: #0f172a; background: #e2e8f0; padding: 2px 6px; border-radius: 4px; font-weight: 600;">
       Selected: $(lat_s)°N, $(lon_s)°W
     </span>
   </div>
 
-  <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 14px; align-items: center;">
-    <div style="position: relative; background: #0f172a; border-radius: 6px; border: 1px solid #334155; overflow: hidden; height: 210px;">
-      <div id="aoi_map" style="width: 100%; height: 100%;"></div>
-      <div style="position: absolute; bottom: 4px; left: 8px; z-index: 1000; font-size: 10px; color: #cbd5e1; background: rgba(15,23,42,0.8); padding: 2px 6px; border-radius: 4px; pointer-events: none;">
-        Click or drag map marker to position Area of Interest (AOI)
+  <div style="position: relative; background: #0f172a; border-radius: 6px; border: 1px solid #334155; overflow: hidden; width: 100%; aspect-ratio: 5 / 4;">
+    <div id="aoi_map" style="width: 100%; height: 100%;"></div>
+    <div style="position: absolute; bottom: 4px; left: 8px; z-index: 1000; font-size: 10px; color: #cbd5e1; background: rgba(15,23,42,0.85); padding: 3px 8px; border-radius: 4px; pointer-events: none;">
+      Click map or drag marker to adjust Area of Interest (AOI)
+    </div>
+  </div>
+
+  <div style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px;">
+    <div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px 10px; display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
+      <div style="display: flex; align-items: center; gap: 6px;">
+        <span style="font-size: 11px; font-weight: 600; color: #334155;">Longitude (°W):</span>
+        <input type="number" id="slider_lon" min="-66.5" max="-57.5" step="0.05" value="$(lon_s)" style="width: 95px; padding: 4px 6px; border: 1px solid #94a3b8; border-radius: 4px; font-family: monospace; font-size: 12px; font-weight: 600; text-align: right; background: #f8fafc;">
+      </div>
+
+      <div style="display: flex; align-items: center; gap: 6px;">
+        <span style="font-size: 11px; font-weight: 600; color: #334155;">Latitude (°N):</span>
+        <input type="number" id="slider_lat" min="42.0" max="48.5" step="0.05" value="$(lat_s)" style="width: 95px; padding: 4px 6px; border: 1px solid #94a3b8; border-radius: 4px; font-family: monospace; font-size: 12px; font-weight: 600; text-align: right; background: #f8fafc;">
       </div>
     </div>
 
-    <div style="display: flex; flex-direction: column; gap: 10px;">
-      <div>
-        <div style="display: flex; justify-content: space-between; font-size: 11px; color: #475569; margin-bottom: 2px;">
-          <span>Longitude (West):</span>
-          <span id="lon_label" style="font-family: monospace; font-weight: 600;">$(lon_s)°</span>
-        </div>
-        <input type="range" id="slider_lon" min="-66.5" max="-57.5" step="0.1" value="$(lon_s)" style="width: 100%;">
-      </div>
+    <div style="display: flex; flex-wrap: wrap; gap: 5px; align-items: center;">
+      <span style="font-size: 10px; color: #64748b; font-weight: 600;">Presets:</span>
+      <button type="button" class="aoi-preset-btn" data-lon="-59.0" data-lat="45.0" style="font-size: 11px; padding: 3px 8px; border: 1px solid #cbd5e1; border-radius: 4px; background: #f8fafc; cursor: pointer; color: #1e293b; font-weight: 500;">Laurentian</button>
+      <button type="button" class="aoi-preset-btn" data-lon="-60.0" data-lat="43.9" style="font-size: 11px; padding: 3px 8px; border: 1px solid #cbd5e1; border-radius: 4px; background: #f8fafc; cursor: pointer; color: #1e293b; font-weight: 500;">Sable Bank</button>
+      <button type="button" class="aoi-preset-btn" data-lon="-58.5" data-lat="44.5" style="font-size: 11px; padding: 3px 8px; border: 1px solid #cbd5e1; border-radius: 4px; background: #f8fafc; cursor: pointer; color: #1e293b; font-weight: 500;">Banquereau</button>
+      <button type="button" class="aoi-preset-btn" data-lon="-62.8" data-lat="44.0" style="font-size: 11px; padding: 3px 8px; border: 1px solid #cbd5e1; border-radius: 4px; background: #f8fafc; cursor: pointer; color: #1e293b; font-weight: 500;">Emerald</button>
+    </div>
 
-      <div>
-        <div style="display: flex; justify-content: space-between; font-size: 11px; color: #475569; margin-bottom: 2px;">
-          <span>Latitude (North):</span>
-          <span id="lat_label" style="font-family: monospace; font-weight: 600;">$(lat_s)°</span>
-        </div>
-        <input type="range" id="slider_lat" min="42.0" max="48.5" step="0.1" value="$(lat_s)" style="width: 100%;">
-      </div>
-
-      <div style="font-size: 10px; color: #64748b; line-height: 1.3; background: #f8fafc; padding: 6px; border-radius: 4px; border: 1px solid #e2e8f0;">
-        Basemap: Esri World Ocean (GEBCO / NOAA bathymetry). Domain bounds: [42.0°N – 48.5°N], [-66.5°W – -57.5°W].
-      </div>
+    <div style="font-size: 10px; color: #64748b; line-height: 1.3; background: #f8fafc; padding: 4px 8px; border-radius: 4px; border: 1px solid #e2e8f0;">
+      Basemap: Esri World Ocean (GEBCO / NOAA). Drag marker or click map to select AOI.
     </div>
   </div>
 
@@ -120,7 +124,21 @@ const l_lat = container.querySelector('#lat_label');
 const c_disp = container.querySelector('#coord_display');
 const mapDiv = container.querySelector('#aoi_map');
 
-let currentVal = { lon: $(lon_s), lat: $(lat_s) };
+let currentVal = {
+  lon: $(lon_s),
+  lat: $(lat_s),
+  span_km: 50.0,
+  min_lon: $(lon_s) - 0.25,
+  max_lon: $(lon_s) + 0.25,
+  min_lat: $(lat_s) - 0.25,
+  max_lat: $(lat_s) + 0.25,
+  bounds: {
+    min_lon: $(lon_s) - 0.25,
+    max_lon: $(lon_s) + 0.25,
+    min_lat: $(lat_s) - 0.25,
+    max_lat: $(lat_s) + 0.25
+  }
+};
 container.value = currentVal;
 if ($(standalone) && window.parent !== window) {
   window.parent.postMessage({ type: 'aoi', value: currentVal }, '*');
@@ -129,19 +147,34 @@ if ($(standalone) && window.parent !== window) {
 function updateCoordinates(lon, lat, dispatch = true, updateMarker = true) {
   lon = Math.min(-57.5, Math.max(-66.5, Math.round(lon * 100) / 100));
   lat = Math.min(48.5, Math.max(42.0, Math.round(lat * 100) / 100));
-  currentVal = { lon: lon, lat: lat };
-  
+
+  currentVal = {
+    lon: lon,
+    lat: lat,
+    span_km: 50.0,
+    min_lon: lon - 0.25,
+    max_lon: lon + 0.25,
+    min_lat: lat - 0.25,
+    max_lat: lat + 0.25,
+    bounds: {
+      min_lon: lon - 0.25,
+      max_lon: lon + 0.25,
+      min_lat: lat - 0.25,
+      max_lat: lat + 0.25
+    }
+  };
+
   s_lon.value = lon;
   s_lat.value = lat;
-  l_lon.innerText = lon.toFixed(2) + "°";
-  l_lat.innerText = lat.toFixed(2) + "°";
+  if (l_lon) l_lon.innerText = lon.toFixed(2) + "°";
+  if (l_lat) l_lat.innerText = lat.toFixed(2) + "°";
   c_disp.innerText = `Selected: \${lat.toFixed(2)}°N, \${lon.toFixed(2)}°W`;
-  
+
   if (updateMarker && window.aoi_marker) {
     window.aoi_marker.setLatLng([lat, lon]);
   }
-  
-  // When location changes, immediately pause the running simulation, update to new location and wait
+
+  // When location changes, immediately pause the running simulation
   if (dispatch && window._TethysBio_state) {
     let gs = window._TethysBio_state;
     if (typeof gs.pauseSimulation === 'function') {
@@ -157,6 +190,9 @@ function updateCoordinates(lon, lat, dispatch = true, updateMarker = true) {
 
   container.value = currentVal;
   if (dispatch) {
+    if ($(standalone) && window.parent !== window) {
+      window.parent.postMessage({ type: 'aoi', value: currentVal }, '*');
+    }
     container.dispatchEvent(new CustomEvent('input', { bubbles: true, composed: true }));
     if (window._TethysBio_state) {
       let gs = window._TethysBio_state;
@@ -186,9 +222,17 @@ s_lat.addEventListener('change', () => {
   updateCoordinates(parseFloat(s_lon.value), parseFloat(s_lat.value), true, true);
 });
 
+container.querySelectorAll('.aoi-preset-btn').forEach(btn => {
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    const pLon = parseFloat(btn.dataset.lon);
+    const pLat = parseFloat(btn.dataset.lat);
+    updateCoordinates(pLon, pLat, true, true);
+  });
+});
+
 function initMap() {
   if (typeof L === 'undefined') {
-    // Dynamically inject Leaflet CSS and JS if not already loaded
     if (!document.getElementById('leaflet_css')) {
       const link = document.createElement('link');
       link.id = 'leaflet_css';
@@ -207,15 +251,23 @@ function initMap() {
 
 function setupLeafletMap() {
   if (mapDiv._leaflet_id) {
-    return; // Already initialized on this element
+    return;
   }
 
+  const domainBounds = [[42.0, -66.5], [48.5, -57.5]];
   const map = L.map(mapDiv, {
-    zoomControl: false,
+    zoomControl: true,
     attributionControl: false
-  }).setView([$(lat_s), $(lon_s)], 6);
+  }).fitBounds(domainBounds, { padding: [6, 6] });
 
-  // 1. GEBCO Global Bathymetry (WMS shaded relief & depth contours) - Open / Keyless
+  // 1. Esri World Ocean Base
+  const esriOcean = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 12,
+    opacity: 1.0,
+    attribution: '&copy; Esri, GEBCO, NOAA'
+  });
+
+  // 2. GEBCO Global Bathymetry (WMS)
   const gebcoBathymetry = L.tileLayer.wms('https://wms.gebco.net/mapserv?', {
     layers: 'GEBCO_LATEST',
     format: 'image/png',
@@ -224,42 +276,32 @@ function setupLeafletMap() {
     attribution: '&copy; GEBCO / IHO / IOC-UNESCO'
   });
 
-  // 2. Esri World Ocean Base (GEBCO / NOAA bathymetric relief)
-  const esriOcean = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}', {
-    maxZoom: 12,
-    attribution: '&copy; Esri, GEBCO, NOAA'
-  });
-
   // 3. NOAA / Esri National Geographic Topographic & Bathymetric Relief
   const natGeoWorld = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/NatGeo_World_Map/MapServer/tile/{z}/{y}/{x}', {
     maxZoom: 12,
     attribution: '&copy; National Geographic, Esri'
   });
 
-  // Add primary layer (GEBCO Bathymetry by default for reliable bathymetric contours)
-  gebcoBathymetry.addTo(map);
+  // 4. OpenStreetMap Standard
+  const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 12,
+    attribution: '&copy; OpenStreetMap contributors'
+  });
 
-  // Add interactive Layer Control for instant provider switching
+  esriOcean.addTo(map);
+
   const baseMaps = {
+    "Esri Ocean Bathymetry": esriOcean,
     "GEBCO Bathymetry (WMS)": gebcoBathymetry,
-    "Esri World Ocean": esriOcean,
-    "NatGeo Topo / Bathy": natGeoWorld
+    "NatGeo Topo / Bathy": natGeoWorld,
+    "OpenStreetMap": osm
   };
   L.control.layers(baseMaps, null, { position: 'topright' }).addTo(map);
 
-  // Scotian Shelf & Laurentian Channel domain bounding box outline
-  const domainBounds = [[42.0, -66.5], [48.5, -57.5]];
-  L.rectangle(domainBounds, {
-    color: "#38bdf8",
-    weight: 1.5,
-    fillOpacity: 0.05,
-    dashArray: "4, 4"
-  }).addTo(map);
-
-  // Draggable Crosshair / Target Marker
+  // Draggable Crosshair / Target Marker at AOI Center
   const customIcon = L.divIcon({
     className: 'aoi-marker',
-    html: `<div style="width: 18px; height: 18px; border-radius: 50%; background: rgba(239, 68, 68, 0.85); border: 2px solid #ffffff; box-shadow: 0 0 6px rgba(0,0,0,0.4); transform: translate(-50%, -50%);"></div>`,
+    html: `<div style="width: 16px; height: 16px; border-radius: 50%; background: rgba(220, 38, 38, 0.9); border: 2px solid #ffffff; box-shadow: 0 0 6px rgba(0,0,0,0.45); transform: translate(-50%, -50%); cursor: grab;"></div>`,
     iconSize: [0, 0]
   });
 
@@ -268,7 +310,9 @@ function setupLeafletMap() {
     icon: customIcon
   }).addTo(map);
   window.aoi_marker = marker;
+  window.aoi_map = map;
 
+  // Marker drag handlers
   marker.on('drag', function(e) {
     const latlng = e.target.getLatLng();
     updateCoordinates(latlng.lng, latlng.lat, false, false);
@@ -279,15 +323,25 @@ function setupLeafletMap() {
     updateCoordinates(latlng.lng, latlng.lat, true, false);
   });
 
+  // Click on map selects new AOI position
   map.on('click', function(e) {
     updateCoordinates(e.latlng.lng, e.latlng.lat, true, true);
   });
 
-  setTimeout(() => { map.invalidateSize(); }, 250);
+  if (typeof ResizeObserver !== 'undefined') {
+    const ro = new ResizeObserver(() => {
+      map.invalidateSize();
+    });
+    ro.observe(mapDiv);
+  }
+  [80, 250, 600, 1200].forEach(ms => setTimeout(() => {
+    map.invalidateSize();
+    map.fitBounds(domainBounds, { padding: [6, 6] });
+  }, ms));
 }
 
 initMap();
-updateCoordinates($(lon_s), $(lat_s), false, false);
+updateCoordinates($(lon_s), $(lat_s), $(span_s), false, false);
 })();
 </script>
 </div>
@@ -326,21 +380,28 @@ NamedTuple with:
 function estimate_aoi_bathymetry(
     lon::Real,
     lat::Real;
-    span_meters::Real = 1000.0,
-    n_points::Int = 25
+    span_meters::Union{Real, Tuple{Real, Real}} = 1000.0,
+    n_points::Union{Int, Tuple{Int, Int}} = 25
 )
-    span_m = Float64(span_meters)
-    half_m = span_m / 2.0
+    span_x, span_y = isa(span_meters, Tuple) ?
+        (Float64(span_meters[1]), Float64(span_meters[2])) :
+        (Float64(span_meters), Float64(span_meters))
+    nx, ny = isa(n_points, Tuple) ? (Int(n_points[1]), Int(n_points[2])) :
+                                    (Int(n_points), Int(n_points))
+    half_x = span_x / 2.0
+    half_y = span_y / 2.0
     lat_deg_len = 111139.0
     lon_deg_len = max(1000.0, 111139.0 * cos(deg2rad(Float64(lat))))
 
-    dlat = half_m / lat_deg_len
-    dlon = half_m / lon_deg_len
+    dlat = half_y / lat_deg_len
+    dlon = half_x / lon_deg_len
 
-    lon_pts = range(lon - dlon, lon + dlon; length = n_points)
-    lat_pts = range(lat - dlat, lat + dlat; length = n_points)
+    lon_pts = range(lon - dlon, lon + dlon; length = nx)
+    lat_pts = range(lat - dlat, lat + dlat; length = ny)
 
     candidate_paths = [
+        tethysbio_data_path("environmental", "bathymetry.parquet"),
+        tethysbio_data_path("inputs", "bathymetry.parquet"),
         tethysbio_data_path("environmental", "bathymetry.zarr"),
         tethysbio_data_path("environmental", "bathymetry.nc"),
         tethysbio_data_path("inputs", "bathymetry.zarr"),
@@ -348,7 +409,7 @@ function estimate_aoi_bathymetry(
     ]
     c_idx = findfirst(p -> ispath(p), candidate_paths)
 
-    depth_mat = zeros(Float64, n_points, n_points)
+    depth_mat = zeros(Float64, nx, ny)
     if c_idx !== nothing
         try
             candidate_file = candidate_paths[c_idx]
@@ -356,24 +417,18 @@ function estimate_aoi_bathymetry(
                 load_environmental_dataset(candidate_file; backend = :ncdatasets) :
                 load_environmental_dataset(candidate_file)
             bathy_itp = environmental_bathymetry_interpolator(ds_bathy)
-            for j in 1:n_points, i in 1:n_points
+            for j in 1:ny, i in 1:nx
                 val = bathy_itp(lon_pts[i], lat_pts[j])
-                depth_mat[i, j] = isnan(val) ? 0.0 : max(0.0, -val)
+                depth_mat[i, j] = !isfinite(val) ? abs(scotian_shelf_regional_elevation(lon_pts[i], lat_pts[j])) : max(0.0, -val)
             end
         catch
-            for j in 1:n_points, i in 1:n_points
-                depth_mat[i, j] = max(
-                    25.0,
-                    180.0 + 80.0 * sin(0.8 * lon_pts[i]) + 60.0 * cos(1.1 * lat_pts[j])
-                )
+            for j in 1:ny, i in 1:nx
+                depth_mat[i, j] = abs(scotian_shelf_regional_elevation(lon_pts[i], lat_pts[j]))
             end
         end
     else
-        for j in 1:n_points, i in 1:n_points
-            depth_mat[i, j] = max(
-                25.0,
-                180.0 + 80.0 * sin(0.8 * lon_pts[i]) + 60.0 * cos(1.1 * lat_pts[j])
-            )
+        for j in 1:ny, i in 1:nx
+            depth_mat[i, j] = abs(scotian_shelf_regional_elevation(lon_pts[i], lat_pts[j]))
         end
     end
 
@@ -403,19 +458,20 @@ function parameter_steering_sliders_widget(;
     standalone::Bool = false
 )
     default_value(key, fallback) = get(defaults, key, fallback)
-    grid_default = clamp(round(Int, default_value(:grid_nx, 50) / 10) * 10, 30, 150)
+    unit_meters_default = Float64(default_value(:unit_meters, 1.0))
+    raw_grid = default_value(:grid, default_value(:grid_res, default_value(:grid_nx, 1000)))
+    grid_default = raw_grid isa Tuple ? raw_grid[1] : round(Int, raw_grid)
     temp_offset_default = clamp(Float64(default_value(:temp_offset, 0.0)), -5.0, 5.0)
     temp_multiplier_default = clamp(Float64(default_value(:temp_multiplier, 1.0)), 0.0, 3.0)
-    temp_noise_default = clamp(Float64(default_value(:temp_noise_sd, 0.0)), 0.0, 1.5)
     habitat_offset_default = clamp(Float64(default_value(:habitat_offset, 0.0)), -1.0, 1.0)
     habitat_multiplier_default = clamp(Float64(default_value(:habitat_multiplier, 1.0)), 0.0, 3.0)
-    food_max_default = clamp(Float64(default_value(:food_max, 10.0)), 4.0, 20.0)
-    food_rate_default = clamp(Float64(default_value(:food_replenishment_rate, 0.1)), 0.0, 1.0)
-    capacity_default = clamp(round(Int, default_value(:benthic_carrying_capacity, 6000) / 1000) * 1000, 1000, 20000)
+    food_avail_default = clamp(Float64(default_value(:food_availability, 1.0)), 0.2, 2.5)
+    capacity_density_default = clamp(Float64(default_value(:benthic_carrying_capacity_density, 6000.0)), 1000.0, 20000.0)
     fishing_start_default = clamp(round(Int, default_value(:fishing_season_start, 90)), 1, 365)
     fishing_end_default = clamp(round(Int, default_value(:fishing_season_end, 150)), 1, 365)
     fishing_rate_default = clamp(Float64(default_value(:fishing_probability_daily, 0.002)), 0.0, 0.01)
     legal_size_default = clamp(Float64(default_value(:legal_size_male, 95.0)), 70.0, 105.0)
+    layer_default = Symbol(default_value(:background_layer, :depth))
     toggle_defaults = Dict(
         :energetics => Bool(default_value(:use_energetics, true)),
         :thermal => Bool(default_value(:use_thermal_stress, true)),
@@ -426,145 +482,99 @@ function parameter_steering_sliders_widget(;
     )
     return """
 <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-            background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 18px; margin: 12px 0; max-width: 820px;">
+            background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 18px; margin: 12px 0; width: 100%;">
   
-  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
     <!-- Column 1: Simulation & Environmental Controls -->
-    <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; padding: 14px;">
-      <div style="font-weight: 700; font-size: 13px; color: #1e293b; margin-bottom: 12px; border-bottom: 2px solid #cbd5e1; padding-bottom: 4px;">
+    <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px;">
+      <div style="font-weight: 700; font-size: 13px; color: #1e293b; margin-bottom: 10px; border-bottom: 2px solid #cbd5e1; padding-bottom: 4px;">
         Simulation & Environmental Controls
       </div>
 
-      <div style="margin-bottom: 10px;">
-        <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">
-          <span>Grid Resolution (cells):</span>
-          <span id="val_grid" style="font-weight: 600; font-family: monospace;">$(grid_default)</span>
-        </div>
-        <input type="range" id="ctrl_grid" min="30" max="150" step="10" value="$(grid_default)" style="width: 100%;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <span style="font-size: 11px; color: #334155;">Grid Resolution (cells):</span>
+        <input type="number" id="ctrl_grid" min="20" max="2000" step="10" value="$(grid_default)" style="width: 75px; padding: 3px 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-family: monospace; font-size: 11px; text-align: right;">
       </div>
 
-      <div style="margin-bottom: 10px;">
-        <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">
-          <span>Base Bottom Temp Offset (°C):</span>
-          <span id="val_temp_offset" style="font-weight: 600; font-family: monospace;">$(temp_offset_default)</span>
-        </div>
-        <input type="range" id="ctrl_temp_offset" min="-5.0" max="5.0" step="0.5" value="$(temp_offset_default)" style="width: 100%;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <span style="font-size: 11px; color: #334155;">Grid Unit / Cell Size (m):</span>
+        <input type="number" id="ctrl_unit_meters" min="0.5" max="100.0" step="0.5" value="$(unit_meters_default)" style="width: 75px; padding: 3px 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-family: monospace; font-size: 11px; text-align: right;">
       </div>
 
-      <div style="margin-bottom: 10px;">
-        <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">
-          <span>Seasonal Temp Multiplier:</span>
-          <span id="val_temp_mult" style="font-weight: 600; font-family: monospace;">$(temp_multiplier_default)</span>
-        </div>
-        <input type="range" id="ctrl_temp_mult" min="0.0" max="3.0" step="0.1" value="$(temp_multiplier_default)" style="width: 100%;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <span style="font-size: 11px; color: #334155;">Base Temp Offset (°C):</span>
+        <input type="number" id="ctrl_temp_offset" min="-5.0" max="5.0" step="0.1" value="$(temp_offset_default)" style="width: 75px; padding: 3px 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-family: monospace; font-size: 11px; text-align: right;">
       </div>
 
-      <div style="margin-bottom: 10px;">
-        <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">
-          <span>Thermal Spatial Noise (SD):</span>
-          <span id="val_temp_noise" style="font-weight: 600; font-family: monospace;">$(temp_noise_default) °C</span>
-        </div>
-        <input type="range" id="ctrl_temp_noise" min="0.0" max="1.5" step="0.05" value="$(temp_noise_default)" style="width: 100%;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <span style="font-size: 11px; color: #334155;">Seasonal Temp Multiplier:</span>
+        <input type="number" id="ctrl_temp_mult" min="0.0" max="3.0" step="0.05" value="$(temp_multiplier_default)" style="width: 75px; padding: 3px 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-family: monospace; font-size: 11px; text-align: right;">
       </div>
 
-      <div style="margin-bottom: 10px;">
-        <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">
-          <span>Habitat Suitability Offset:</span>
-          <span id="val_hab_offset" style="font-weight: 600; font-family: monospace;">$(habitat_offset_default)</span>
-        </div>
-        <input type="range" id="ctrl_hab_offset" min="-1.0" max="1.0" step="0.05" value="$(habitat_offset_default)" style="width: 100%;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <span style="font-size: 11px; color: #334155;">Habitat Suitability Offset:</span>
+        <input type="number" id="ctrl_hab_offset" min="-1.0" max="1.0" step="0.05" value="$(habitat_offset_default)" style="width: 75px; padding: 3px 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-family: monospace; font-size: 11px; text-align: right;">
       </div>
 
-      <div style="margin-bottom: 10px;">
-        <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">
-          <span>Habitat Multiplier:</span>
-          <span id="val_hab_mult" style="font-weight: 600; font-family: monospace;">$(habitat_multiplier_default)×</span>
-        </div>
-        <input type="range" id="ctrl_hab_mult" min="0.0" max="3.0" step="0.1" value="$(habitat_multiplier_default)" style="width: 100%;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <span style="font-size: 11px; color: #334155;">Habitat Multiplier:</span>
+        <input type="number" id="ctrl_hab_mult" min="0.0" max="3.0" step="0.05" value="$(habitat_multiplier_default)" style="width: 75px; padding: 3px 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-family: monospace; font-size: 11px; text-align: right;">
       </div>
 
-      <div style="margin-bottom: 10px;">
-        <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">
-          <span>Benthic Food Max:</span>
-          <span id="val_food" style="font-weight: 600; font-family: monospace;">$(food_max_default)</span>
-        </div>
-        <input type="range" id="ctrl_food" min="4.0" max="20.0" step="1.0" value="$(food_max_default)" style="width: 100%;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <span style="font-size: 11px; color: #334155;">Food Availability Multiplier:</span>
+        <input type="number" id="ctrl_food_avail" min="0.2" max="2.5" step="0.05" value="$(food_avail_default)" style="width: 75px; padding: 3px 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-family: monospace; font-size: 11px; text-align: right;">
       </div>
 
-      <div style="margin-bottom: 10px;">
-        <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">
-          <span>Food Replenishment Rate:</span>
-          <span id="val_food_rate" style="font-weight: 600; font-family: monospace;">$(food_rate_default)</span>
-        </div>
-        <input type="range" id="ctrl_food_rate" min="0.0" max="1.0" step="0.01" value="$(food_rate_default)" style="width: 100%;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <span style="font-size: 11px; color: #334155;">Carrying Capacity (/km²):</span>
+        <input type="number" id="ctrl_k_density" min="1000" max="20000" step="500" value="$(round(Int, capacity_density_default))" style="width: 75px; padding: 3px 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-family: monospace; font-size: 11px; text-align: right;">
       </div>
 
-      <div style="margin-bottom: 10px;">
-        <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">
-          <span>Carrying Capacity K:</span>
-          <span id="val_k" style="font-weight: 600; font-family: monospace;">$(capacity_default)</span>
-        </div>
-        <input type="range" id="ctrl_k" min="1000" max="20000" step="1000" value="$(capacity_default)" style="width: 100%;">
-      </div>
-
-      <div>
-        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 12px;">
-          <span style="font-weight: 600;">Spatial Map Background Layer:</span>
-          <select id="ctrl_layer" style="padding: 2px 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 12px;">
-            <option value="habitat_quality" selected>Habitat Quality (HSI)</option>
-            <option value="temperature">Bottom Temperature</option>
-            <option value="depth">Seabed Bathymetric Depth (m)</option>
-          </select>
-        </div>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px;">
+        <span style="font-size: 11px; font-weight: 600; color: #334155;">Background Layer:</span>
+        <select id="ctrl_layer" style="padding: 2px 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 11px;">
+          <option value="depth" $(layer_default === :depth ? "selected" : "")>Seabed Depth (m)</option>
+          <option value="temperature" $(layer_default === :temperature ? "selected" : "")>Bottom Temperature</option>
+          <option value="habitat_quality" $(layer_default === :habitat_quality ? "selected" : "")>Habitat Quality (HSI)</option>
+        </select>
       </div>
     </div>
 
-    <!-- Column 2: Fishery Sliders & Biological Process Toggles -->
-    <div style="display: flex; flex-direction: column; gap: 14px;">
-      <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; padding: 14px;">
-        <div style="font-weight: 700; font-size: 13px; color: #1e293b; margin-bottom: 12px; border-bottom: 2px solid #cbd5e1; padding-bottom: 4px;">
-          Commercial Fishery Selectivity
+    <!-- Column 2: Commercial Fishing Activity & Biological Processes -->
+    <div style="display: flex; flex-direction: column; gap: 12px;">
+      <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px;">
+        <div style="font-weight: 700; font-size: 13px; color: #1e293b; margin-bottom: 10px; border-bottom: 2px solid #cbd5e1; padding-bottom: 4px;">
+          Commercial Fishing Activity
         </div>
 
-        <div style="margin-bottom: 10px;">
-          <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">
-            <span>Fishing Start (Day):</span>
-            <span id="val_fish_start" style="font-weight: 600; font-family: monospace;">$(fishing_start_default)</span>
-          </div>
-          <input type="range" id="ctrl_fish_start" min="1" max="365" step="1" value="$(fishing_start_default)" style="width: 100%;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <span style="font-size: 11px; color: #334155;">Fishing Start (Day):</span>
+          <input type="number" id="ctrl_fish_start" min="1" max="365" step="1" value="$(fishing_start_default)" style="width: 75px; padding: 3px 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-family: monospace; font-size: 11px; text-align: right;">
         </div>
 
-        <div style="margin-bottom: 10px;">
-          <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">
-            <span>Fishing End (Day):</span>
-            <span id="val_fish_end" style="font-weight: 600; font-family: monospace;">$(fishing_end_default)</span>
-          </div>
-          <input type="range" id="ctrl_fish_end" min="1" max="365" step="1" value="$(fishing_end_default)" style="width: 100%;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <span style="font-size: 11px; color: #334155;">Fishing End (Day):</span>
+          <input type="number" id="ctrl_fish_end" min="1" max="365" step="1" value="$(fishing_end_default)" style="width: 75px; padding: 3px 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-family: monospace; font-size: 11px; text-align: right;">
         </div>
 
-        <div style="margin-bottom: 10px;">
-          <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">
-            <span>Daily Harvest Probability:</span>
-            <span id="val_fish_rate" style="font-weight: 600; font-family: monospace;">$(fishing_rate_default)</span>
-          </div>
-          <input type="range" id="ctrl_fish_rate" min="0.0" max="0.01" step="0.0005" value="$(fishing_rate_default)" style="width: 100%;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <span style="font-size: 11px; color: #334155;">Daily Harvest Probability:</span>
+          <input type="number" id="ctrl_fish_rate" min="0.0" max="0.01" step="0.0005" value="$(fishing_rate_default)" style="width: 75px; padding: 3px 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-family: monospace; font-size: 11px; text-align: right;">
         </div>
 
-        <div>
-          <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">
-            <span>Legal Male Size Threshold:</span>
-            <span id="val_legal_size" style="font-weight: 600; font-family: monospace;">$(legal_size_default) mm</span>
-          </div>
-          <input type="range" id="ctrl_legal_size" min="70.0" max="105.0" step="1.0" value="$(legal_size_default)" style="width: 100%;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 11px; color: #334155;">Legal Male Size (mm):</span>
+          <input type="number" id="ctrl_legal_size" min="70.0" max="105.0" step="1.0" value="$(legal_size_default)" style="width: 75px; padding: 3px 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-family: monospace; font-size: 11px; text-align: right;">
         </div>
       </div>
 
-      <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; padding: 14px; flex-grow: 1;">
-        <div style="font-weight: 700; font-size: 13px; color: #1e293b; margin-bottom: 12px; border-bottom: 2px solid #cbd5e1; padding-bottom: 4px;">
-          Biological Process Toggles
+      <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px; flex-grow: 1;">
+        <div style="font-weight: 700; font-size: 13px; color: #1e293b; margin-bottom: 10px; border-bottom: 2px solid #cbd5e1; padding-bottom: 4px;">
+          Biological Processes
         </div>
 
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 12px;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 11px;">
           <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
             <input type="checkbox" id="tog_energetics" $(toggle_defaults[:energetics] ? "checked" : "")>
             <span>Bioenergetics</span>
@@ -599,14 +609,13 @@ function parameter_steering_sliders_widget(;
 const container = document.currentScript.parentElement;
 
 const c_grid = container.querySelector('#ctrl_grid');
+const c_unit_meters = container.querySelector('#ctrl_unit_meters');
 const c_toffset = container.querySelector('#ctrl_temp_offset');
 const c_tmult = container.querySelector('#ctrl_temp_mult');
-const c_tnoise = container.querySelector('#ctrl_temp_noise');
 const c_hab_offset = container.querySelector('#ctrl_hab_offset');
 const c_hab_mult = container.querySelector('#ctrl_hab_mult');
-const c_food = container.querySelector('#ctrl_food');
-const c_food_rate = container.querySelector('#ctrl_food_rate');
-const c_k = container.querySelector('#ctrl_k');
+const c_food_avail = container.querySelector('#ctrl_food_avail');
+const c_k_density = container.querySelector('#ctrl_k_density');
 const c_layer = container.querySelector('#ctrl_layer');
 const c_fstart = container.querySelector('#ctrl_fish_start');
 const c_fend = container.querySelector('#ctrl_fish_end');
@@ -640,9 +649,10 @@ s.slidersContainer = container;
 function getSlidersState() {
   const toff = parseFloat(c_toffset.value);
   const tmult = parseFloat(c_tmult.value);
-  const tnoise = parseFloat(c_tnoise ? c_tnoise.value : 0.0);
   const hab_off = parseFloat(c_hab_offset.value);
   const hab_m = parseFloat(c_hab_mult.value);
+  const favail = parseFloat(c_food_avail ? c_food_avail.value : 1.0);
+  const kdensity = parseFloat(c_k_density ? c_k_density.value : 6000.0);
   return {
     sim_status: s.simState,
     current_day: s.currentSimDay,
@@ -650,17 +660,18 @@ function getSlidersState() {
     update_interval: s.update_interval || $(default_interval),
     sim_years: s.sim_years || $(default_years),
     grid_res: parseInt(c_grid.value),
+    unit_meters: parseFloat(c_unit_meters ? c_unit_meters.value : 1.0),
     temp_offset: toff,
     temp_multiplier: tmult,
-    temp_noise_sd: tnoise,
     temp_base: toff,
     temp_amplitude: tmult,
     habitat_offset: hab_off,
     habitat_multiplier: hab_m,
     background_layer: c_layer.value,
-    food_max: parseFloat(c_food.value),
-    food_replenishment_rate: parseFloat(c_food_rate.value),
-    benthic_carrying_capacity: parseFloat(c_k.value),
+    food_availability: favail,
+    food_multiplier: favail,
+    benthic_carrying_capacity_density: kdensity,
+    carrying_capacity_density: kdensity,
     fishing_season_start: parseFloat(c_fstart.value),
     fishing_season_end: parseFloat(c_fend.value),
     fishing_rate: parseFloat(c_frate.value),
@@ -675,22 +686,6 @@ function getSlidersState() {
 }
 
 function updateSliders() {
-  container.querySelector('#val_grid').innerText = c_grid.value;
-  container.querySelector('#val_temp_offset').innerText = (parseFloat(c_toffset.value) >= 0 ? "+" : "") + parseFloat(c_toffset.value).toFixed(1);
-  container.querySelector('#val_temp_mult').innerText = parseFloat(c_tmult.value).toFixed(1) + "×";
-  if (c_tnoise) {
-    container.querySelector('#val_temp_noise').innerText = parseFloat(c_tnoise.value).toFixed(2) + " °C";
-  }
-  container.querySelector('#val_hab_offset').innerText = (parseFloat(c_hab_offset.value) >= 0 ? "+" : "") + parseFloat(c_hab_offset.value).toFixed(2);
-  container.querySelector('#val_hab_mult').innerText = parseFloat(c_hab_mult.value).toFixed(1) + "×";
-  container.querySelector('#val_food').innerText = parseFloat(c_food.value).toFixed(1);
-  container.querySelector('#val_food_rate').innerText = parseFloat(c_food_rate.value).toFixed(2);
-  container.querySelector('#val_k').innerText = c_k.value;
-  container.querySelector('#val_fish_start').innerText = c_fstart.value;
-  container.querySelector('#val_fish_end').innerText = c_fend.value;
-  container.querySelector('#val_fish_rate').innerText = parseFloat(c_frate.value).toFixed(4);
-  container.querySelector('#val_legal_size').innerText = parseFloat(c_lsize.value).toFixed(1) + " mm";
-
   container.value = getSlidersState();
   container.dispatchEvent(new CustomEvent('input', { bubbles: true, composed: true }));
   if ($(standalone) && window.parent !== window) {
@@ -702,8 +697,11 @@ function updateSliders() {
   }
 }
 
-[c_grid, c_toffset, c_tmult, c_tnoise, c_hab_offset, c_hab_mult, c_food, c_food_rate, c_k, c_fstart, c_fend, c_frate, c_lsize].forEach(el => {
-  if (el) el.addEventListener('input', updateSliders);
+[c_grid, c_unit_meters, c_toffset, c_tmult, c_hab_offset, c_hab_mult, c_food_avail, c_k_density, c_fstart, c_fend, c_frate, c_lsize].forEach(el => {
+  if (el) {
+    el.addEventListener('input', updateSliders);
+    el.addEventListener('change', updateSliders);
+  }
 });
 [c_layer, t_energetics, t_thermal, t_cannibalism, t_senescence, t_movement, t_reproduction].forEach(el => {
   el.addEventListener('change', updateSliders);
@@ -730,7 +728,7 @@ function simulation_transport_widget(;
 )
     return """
 <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-            background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 14px 18px; margin: 12px 0; max-width: 820px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+            background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 14px 18px; margin: 0 0 12px 0; width: 100%; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
   <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
     <span style="font-weight: 700; font-size: 14px; color: #0f172a;">Simulation Execution & Sequence Controls</span>
     <span id="status_pill" style="font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 12px; background: #e2e8f0; color: #475569;">
@@ -982,24 +980,30 @@ function plot_bottom_temperature_cycle(
     lat::Real;
     temp_offset::Real = 0.0,
     temp_multiplier::Real = 1.0,
-    phase_day::Real = 80.0
+    phase_day::Real = 80.0,
+    depth::Union{Nothing, Real} = nothing
 )
     # Regional shelf bathymetric and thermal climatology formulation
-    depth = max(25.0, 180.0 + 80.0 * sin(0.8 * lon) + 60.0 * cos(1.1 * lat))
-    mean_t = 2.0 + 2.5 * exp(-((depth - 150.0)/60.0)^2) + 0.3 * (45.0 - lat) + temp_offset
+    d_val = if depth !== nothing
+        max(10.0, Float64(depth))
+    else
+        max(10.0, abs(scotian_shelf_regional_elevation(lon, lat)))
+    end
+    mean_t = 2.0 + 2.5 * exp(-((d_val - 150.0)/60.0)^2) + 0.3 * (45.0 - lat) + temp_offset
     
     # Seasonal amplitude decays with water depth (shallower banks experience larger seasonal swings)
-    base_amp = max(0.5, 5.0 * exp(-depth / 100.0))
+    base_amp = max(0.5, 5.0 * exp(-d_val / 100.0))
     amp = base_amp * temp_multiplier
 
     days = 1:365
     temps = [mean_t + amp * sin(2.0 * π * (d - phase_day) / 365.0) for d in days]
 
-    fig = Figure(size = (740, 260))
+    fig = Figure(size = (600, 480))
     ax = Axis(
         fig[1, 1],
-        title = @sprintf("Annual Bottom Temperature Cycle (%.2f°N, %.2f°W | Depth: %.0f m)",
-                         lat, -lon, depth),
+        title = @sprintf("Seasonal Bottom Temperature Climatology\n(%.2f°N, %.2f°W | Depth: %.0f m)",
+                         lat, abs(lon), d_val),
+        titlesize = 13,
         xlabel = "Day of Year",
         ylabel = "Bottom Temp (°C)",
         xticks = (
@@ -1029,7 +1033,8 @@ function plot_dashboard_spatial(
     sim_days::Real = 0,
     horizon_days::Real = 730,
     sim_status::AbstractString = "STOPPED",
-    background_layer::Symbol = :habitat_quality
+    background_layer::Symbol = :habitat_quality,
+    exclusion_boxes = nothing
 )
     day_i = round(Int, sim_days)
     yr_f = round(sim_days / 365.0, digits = 1)
@@ -1038,16 +1043,21 @@ function plot_dashboard_spatial(
     grid_dim = size(model.temperature_field)
     nx, ny = grid_dim[1], grid_dim[2]
 
-    fig = Figure(size = (740, 560))
+    fig = Figure(size = (420, 380))
     ax = Axis(
         fig[1, 1],
         title = "Spatial Habitat & Organism Distribution (Day $(day_i) / Year $(yr_f))\n$(sub_title)",
         xlabel = "Grid X (cells)",
         ylabel = "Grid Y (cells)",
         limits = (0.5, nx + 0.5, 0.5, ny + 0.5),
-        autolimitaspect = 1.0,
+        aspect = 1.0,
         xticks = LinearTicks(5),
-        yticks = LinearTicks(5)
+        yticks = LinearTicks(5),
+        titlesize = 13,
+        xlabelsize = 11,
+        ylabelsize = 11,
+        xticklabelsize = 10,
+        yticklabelsize = 10
     )
 
     env_layer, colormap, cb_label = if background_layer === :habitat_quality &&
@@ -1063,15 +1073,42 @@ function plot_dashboard_spatial(
     living_orgs = collect(allagents(model))
     xs = Float32[Float32(a.pos[1]) for a in living_orgs]
     ys = Float32[Float32(a.pos[2]) for a in living_orgs]
-    szs = Float32[Float32(max(4.0, a.size * 0.15)) for a in living_orgs]
+    szs = Float32[Float32(min(8.0, max(3.0, 2.5 + a.size * 0.045))) for a in living_orgs]
     cols = String[organism_color(a, params) for a in living_orgs]
 
-    hm = setup_spatial_panel!(ax, env_layer, xs, ys, szs, cols; colormap = colormap)
+    if isempty(living_orgs)
+        agg_pop = get(abmproperties(model), :aggregate_populations, nothing)
+        if agg_pop !== nothing && !isempty(agg_pop.groups)
+            for g in agg_pop.groups
+                g.abundance > 0 || continue
+                push!(xs, Float32(g.pos[1]))
+                push!(ys, Float32(g.pos[2]))
+                push!(szs, Float32(2.5))
+                push!(cols, "#06b6d4")
+            end
+        end
+    end
+
+    exclusion_rects = if exclusion_boxes !== nothing && !isempty(exclusion_boxes)
+        [
+            Rect2f(box.xmin, box.ymin, max(0.1, box.xmax - box.xmin), max(0.1, box.ymax - box.ymin))
+            for box in exclusion_boxes if box.active
+        ]
+    else
+        nothing
+    end
+
+    hm = setup_spatial_panel!(
+        ax, env_layer, xs, ys, szs, cols;
+        colormap = colormap,
+        exclusion_rects = exclusion_rects
+    )
     Colorbar(fig[1, 2], hm, label = cb_label, ticks = LinearTicks(4))
 
-    if isempty(living_orgs)
+    if isempty(xs)
         Label(fig[1, 1], "No living organisms present",
-              color = :gray, halign = :center, valign = :center)
+              color = :gray, halign = :center, valign = :center,
+              tellwidth = false, tellheight = false)
     end
     return fig
 end
@@ -1085,7 +1122,7 @@ and Legal Fishable Males matching `ax_ts_n` in the native Makie GUI.
 function plot_dashboard_abundance(agent_df::DataFrame; sim_days::Real = 0)
     day_i = round(Int, sim_days)
     yr_f = round(sim_days / 365.0, digits = 1)
-    fig = Figure(size = (780, 360))
+    fig = Figure(size = (780, 380))
     ax = Axis(
         fig[1, 1],
         title = "Abundance Trajectories (Day $(day_i) / Year $(yr_f))",
@@ -1111,7 +1148,8 @@ function plot_dashboard_abundance(agent_df::DataFrame; sim_days::Real = 0)
         setup_abundance_panel!(ax, pts_tot, pts_mf, pts_mm, pts_leg)
     else
         Label(fig[1, 1], "Awaiting simulation progression (Day $(day_i))",
-              color = :gray50, halign = :center, valign = :center)
+              color = :gray50, halign = :center, valign = :center,
+              tellwidth = false, tellheight = false)
     end
     return fig
 end
@@ -1284,12 +1322,17 @@ function plot_dashboard_macro(
 )
     day_i = round(Int, sim_days)
     yr_f = round(sim_days / 365.0, digits = 1)
-    fig = Figure(size = (800, 380))
+    fig = Figure(size = (760, 520))
     ax = Axis(
         fig[1, 1],
         title = "Biomass, Catch & Macro-Models (Day $(day_i) / Year $(yr_f))",
         xlabel = "Simulation Time (days)",
-        ylabel = "Biomass (kg)"
+        ylabel = "Biomass (kg)",
+        titlesize = 16,
+        xlabelsize = 14,
+        ylabelsize = 14,
+        xticklabelsize = 12,
+        yticklabelsize = 12
     )
     
     pts_b = Point2f[]
@@ -1359,12 +1402,18 @@ matching `ax_sr` and `update_sr_fit!` in `gui.jl`.
 function plot_dashboard_stock_recruitment(annual_df::DataFrame; sim_days::Real = 0)
     day_i = round(Int, sim_days)
     yr_f = round(sim_days / 365.0, digits = 1)
-    fig = Figure(size = (800, 420))
+    fig = Figure(size = (760, 520))
     ax = Axis(
         fig[1, 1],
         title = "Stock-Recruitment: Male Component (Day $(day_i) / Year $(yr_f))",
         xlabel = "log10(Annual Eggs / 2)",
-        ylabel = "log10(Males at Recruitment Stage)"
+        ylabel = "log10(Males at Recruitment Stage)",
+        limits = (0.0, 10.0, 0.0, 10.0),
+        titlesize = 16,
+        xlabelsize = 14,
+        ylabelsize = 14,
+        xticklabelsize = 12,
+        yticklabelsize = 12
     )
     
     sr_pts = Point2f[]
@@ -1392,6 +1441,7 @@ function plot_dashboard_stock_recruitment(annual_df::DataFrame; sim_days::Real =
     bh_pts = Point2f[]
     
     if !isempty(sr_pts)
+        autolimits!(ax)
         fit_sr = fit_stock_recruitment(spawners_raw, recruits_raw)
         if fit_sr.is_fitted
             s_lo, s_hi = extrema(spawners_raw)
@@ -1415,12 +1465,16 @@ function plot_dashboard_stock_recruitment(annual_df::DataFrame; sim_days::Real =
                        "Beverton–Holt: R = $(a_b)·S / (1 + $(b_b)·S)  (R²=$(round(bh.R2, digits=3)))\n" *
                        "Preferred: $(fit_sr.best_model === :ricker ? "Ricker" : "Beverton–Holt")"
             Label(fig[1, 1], fit_text, halign = :left, valign = :top,
-                  fontsize = 9, color = :black, tellwidth = false, tellheight = false)
+                  fontsize = 12, color = :black, tellwidth = false, tellheight = false)
         end
-        setup_stock_recruitment_panel!(ax, sr_pts, rk_pts, bh_pts)
+        setup_stock_recruitment_panel!(
+            ax, sr_pts, rk_pts, bh_pts;
+            markersize = 11, linewidth = 2.8, labelsize = 12
+        )
     else
         Label(fig[1, 1], "Awaiting multi-year annual recruitment data (Day $(day_i))",
-              color = :gray50, halign = :center, valign = :center)
+              fontsize = 14, color = :gray50, halign = :center, valign = :center,
+              tellwidth = false, tellheight = false)
     end
     return fig
 end
@@ -1469,7 +1523,8 @@ function plot_dashboard_environmental_distributions(model; sim_days::Real = 0)
         end
     else
         ax_d = Axis(fig[1, 1], title = "Seabed Depth", xlabel = "Depth (m)", ylabel = "Cell Frequency")
-        Label(fig[1, 1], "No Depth Data", color = :gray, halign = :center, valign = :center)
+        Label(fig[1, 1], "No Depth Data", color = :gray, halign = :center, valign = :center,
+              tellwidth = false, tellheight = false)
     end
 
     # Panel 2: Ambient Bottom Temperature
@@ -1494,7 +1549,8 @@ function plot_dashboard_environmental_distributions(model; sim_days::Real = 0)
         end
     else
         ax_t = Axis(fig[1, 2], title = "Bottom Temperature", xlabel = "Temperature (°C)", ylabel = "Cell Frequency")
-        Label(fig[1, 2], "No Temperature Data", color = :gray, halign = :center, valign = :center)
+        Label(fig[1, 2], "No Temperature Data", color = :gray, halign = :center, valign = :center,
+              tellwidth = false, tellheight = false)
     end
 
     # Panel 3: Habitat Suitability Index (HSI)
@@ -1514,7 +1570,8 @@ function plot_dashboard_environmental_distributions(model; sim_days::Real = 0)
             vlines!(ax_h, [h_min], color = :teal, linewidth = 2.5)
         else
             # Ensure bins resolve fine structure across realized HSI span
-            nbins = clamp(round(Int, 25 * max(0.2, h_span)), 15, 25)
+            calc_bins = round(Int, 25 * max(0.2, h_span))
+            nbins = max(15, min(25, calc_bins))
             hist!(ax_h, h_vals, bins = nbins,
                   color = (:teal, 0.45), strokecolor = :teal, strokewidth = 1.0)
             pad_h = max(0.02, 0.08 * h_span)
@@ -1522,7 +1579,8 @@ function plot_dashboard_environmental_distributions(model; sim_days::Real = 0)
         end
     else
         ax_h = Axis(fig[1, 3], title = "Habitat Suitability (HSI)", xlabel = "HSI [0, 1]", ylabel = "Cell Frequency")
-        Label(fig[1, 3], "No HSI Data", color = :gray, halign = :center, valign = :center)
+        Label(fig[1, 3], "No HSI Data", color = :gray, halign = :center, valign = :center,
+              tellwidth = false, tellheight = false)
     end
 
     return fig

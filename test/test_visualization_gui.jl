@@ -149,7 +149,18 @@ include("test_fixtures.jl")
         @test isa(fig, Figure)
         @test isa(state, IBMGuiState)
         @test state.current_time[] == 0.0
+        @test state.aoi_lon[] == -59.0
+        @test state.aoi_lat[] == 45.0
+        @test state.active_tab[] == 1
         @test length(state.obs_agent_x[]) == 25
+
+        bathy = TethysBio.load_gui_aoi_bathymetry()
+        @test first(bathy.lons) ≈ -66.5
+        @test last(bathy.lons) ≈ -57.5
+        @test first(bathy.lats) ≈ 42.0
+        @test last(bathy.lats) ≈ 48.5
+        @test size(bathy.depths) == (length(bathy.lons), length(bathy.lats))
+        @test all(isfinite, bathy.depths)
 
         # Test stepping GUI state
         step_gui_simulation!(state, 10.0)

@@ -1,4 +1,4 @@
-# Segment: Habitat Suitability and Tethys Environmental Integration
+# Segment: Habitat Suitability and Environmental Integration
 include("test_fixtures.jl")
 
 @testset "TethysBio - Habitat and Environment" begin
@@ -25,7 +25,7 @@ include("test_fixtures.jl")
         @test isapprox(std(f_m2), 2.0 * p_m2.habitat_quality_sd, atol = 0.05)
     end
 
-    @testset "Habitat Suitability and Tethys Environmental Integration" begin
+    @testset "Habitat Suitability and Environmental Integration" begin
         # 1. Thermal suitability component
         # Cold optimal temperature
         hsi_opt = calculate_habitat_suitability(1.5, 150.0)

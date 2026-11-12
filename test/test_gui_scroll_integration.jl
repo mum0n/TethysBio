@@ -3,8 +3,9 @@ using TethysBio
 using GLMakie
 using Dates
 using TOML
+using InteractiveUtils
 
-@testset "Scrollable GUI Integration & Shared Interactivity" begin
+@testset "Tabbed GUI Integration & Shared Interactivity" begin
     # Launch GUI in headless mode (no display window)
     fig, state = launch_organism_gui(
         n_agents = 30,
@@ -18,20 +19,25 @@ using TOML
     @test isa(state, IBMGuiState)
     window_width = GLMakie.size(fig.scene)[1]
     window_height = GLMakie.size(fig.scene)[2]
-    control_bbox = fig.layout.content[1].content.layoutobservables.computedbbox[]
-    control_content_bbox =
-        fig.layout.content[1].content.content[2].content.layoutobservables.computedbbox[]
-    scroll_bbox = fig.layout.content[2].content.layoutobservables.computedbbox[]
-    @test control_bbox.origin[1] >= 0
-    @test control_bbox.origin[1] + control_bbox.widths[1] <= window_width
-    @test control_content_bbox.origin[2] >= 0
-    @test control_content_bbox.origin[2] + control_content_bbox.widths[2] <= window_height
-    @test scroll_bbox.origin[1] >= 0
-    @test scroll_bbox.origin[1] + scroll_bbox.widths[1] <= window_width
+    top_bar = fig.layout.content[1].content
+    top_bar_bbox = top_bar.layoutobservables.computedbbox[]
+    main_area_bbox = fig.layout.content[2].content.layoutobservables.computedbbox[]
+
+    @test top_bar_bbox.origin[1] >= 0
+    @test top_bar_bbox.origin[1] + top_bar_bbox.widths[1] <= window_width
+    @test main_area_bbox.origin[2] >= 0
+    @test main_area_bbox.origin[2] + main_area_bbox.widths[2] <= window_height
+
+    # Initial tab state
+    @test state.active_tab[] == 1
     @test length(state.obs_stage_dist_init[]) == 20
-    @test state.aoi_lon[] == -63.5
-    @test state.aoi_lat[] == 44.5
+    @test state.aoi_lon[] == -59.0
+    @test state.aoi_lat[] == 45.0
     @test isempty(state.exclusion_boxes[])
+
+    # Scotian Shelf regional map
+    @test state.ax_aoi_map !== nothing
+    @test state.ax_aoi_map.xreversed[] == false
 
     depth_field = state.model.depth_field
     @test size(depth_field) == (15, 15)
@@ -64,7 +70,7 @@ using TOML
         @test isfile(toml_path)
         parsed = TOML.parsefile(toml_path)
         @test haskey(parsed, "aoi")
-        @test parsed["aoi"]["lon"] == -63.5
+        @test parsed["aoi"]["lon"] == -59.0
         @test haskey(parsed, "spatial_exclusion")
         @test length(parsed["spatial_exclusion"]["boxes"]) == 1
         @test parsed["spatial_exclusion"]["boxes"][1]["name"] == "TestMPA"
@@ -72,40 +78,61 @@ using TOML
         @test length(parsed["initial_stage_distribution"]) == 20
     end
 
-    left_grid = fig.layout.content[1].content.content[2].content
-    parameter_grid = left_grid.content[5].content
+    # Test parameter steering on tab2_controls_grid (Tab 2)
+    main_area = fig.layout.content[2].content
+    tab2_controls_grid = main_area.content[2].content
+    tab2_col2 = tab2_controls_grid.content[2].content
+    fish_grid = tab2_col2.content[2].content
     legal_size_input = first(
-        c.content for c in parameter_grid.content
-        if c.content isa Textbox && c.span.rows == 6:6 && c.span.cols == 4:4
+        c.content for c in fish_grid.content
+        if c.content isa Textbox && c.span.rows == 4:4 && c.span.cols == 2:2
     )
     legal_size_input.stored_string[] = "100.0"
     @test state.model.params.fishery.legal_size_male == 100.0
 
-    aoi_grid = fig.layout.content[1].content.content[2].content.content[3].content.content[1].content
-    lon_input = first(c.content for c in aoi_grid.content if c.content isa Textbox)
-    lon_input.stored_string[] = "-63.4"
-    @test state.aoi_lon[] == -63.4
+    # Test adjusting coordinates on aoi_grid (Tab 1)
+    controls_tab_grid = main_area.content[1].content
+    ctrl_col1 = controls_tab_grid.content[1].content
+    aoi_grid = ctrl_col1.content[2].content
+    lon_input = first(c.content for c in aoi_grid.content if c.content isa Textbox && c.span.rows == 1:1)
+    lat_input = first(c.content for c in aoi_grid.content if c.content isa Textbox && c.span.rows == 2:2)
+    lat_input.stored_string[] = "43.5"
+    lon_input.stored_string[] = "-63.6"
+    @test state.aoi_lon[] == -63.6
+    @test state.aoi_lat[] == 43.5
     @test state.current_time[] == 0.0
-    @test sum(state.model.params.domain_lon) / 2 ≈ -63.4
+    @test sum(state.model.params.domain_lon) / 2 ≈ -63.6
     @test size(state.model.depth_field) == (15, 15)
+
+    # Test tab navigation through all pages
+    for t in 1:4
+        state.active_tab[] = t
+        @test state.active_tab[] == t
+    end
+
+    # Step simulation and test rewind on top_bar
+    state.active_tab[] = 1
     step_gui_simulation!(state, 15.0)
     @test state.current_time[] == 15.0
-    transport_grid = left_grid.content[2].content
+    top_bar = fig.layout.content[1].content
     rewind_input = first(
-        c.content for c in transport_grid.content
-        if c.content isa Textbox && c.span.rows == 5:5 && c.span.cols == 8:8
+        c.content for c in top_bar.content
+        if c.content isa Textbox && c.span.cols == 13:13
     )
     rewind_button = first(
-        c.content for c in transport_grid.content
-        if c.content isa Button && c.span.rows == 5:5 && c.span.cols == 9:10
+        c.content for c in top_bar.content
+        if c.content isa Button && c.span.cols == 14:14
     )
     rewind_input.stored_string[] = "5"
     rewind_button.clicks[] += 1
     @test state.current_time[] == 5.0
 
+    # Test grid resolution entry on tab2_controls_grid
+    tab2_col1 = tab2_controls_grid.content[1].content
+    sim_env_grid = tab2_col1.content[2].content
     grid_input = first(
-        c.content for c in transport_grid.content
-        if c.content isa Textbox && c.span.rows == 7:7 && c.span.cols == 9:10
+        c.content for c in sim_env_grid.content
+        if c.content isa Textbox && c.span.rows == 1:1 && c.span.cols == 2:2
     )
     grid_input.stored_string[] = "30"
     @test size(state.model.depth_field) == (30, 30)

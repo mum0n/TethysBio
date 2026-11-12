@@ -61,9 +61,9 @@ What this configuration will read, where each input's assimilated copy lives, an
 is already there. Read-only: nothing is fetched and nothing is written, so a caller can ask
 before spending the time.
 
-Present-ness is measured with `isdir`, because a Tethys store *is* a directory: a fetch that
-wrote a Zarr store leaves one, and a caller that tested `isfile` would report every assimilated
-input as missing.
+Present-ness is measured with `isdir` or `isfile`, because an environmental store may be a
+directory or a file: a fetch that wrote a store leaves one, and a caller that tested
+`isfile` would report directory stores as missing.
 """
 function environmental_input_status(env_params::EnvironmentParams)
     store = abspath(environmental_store_dir(env_params))

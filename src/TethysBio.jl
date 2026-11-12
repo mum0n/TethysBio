@@ -11,8 +11,6 @@ using Distributions
 using CairoMakie
 using Random
 using Statistics
-using GeoData
-using GeoDataSources
 using Parquet2
 using Interpolations
 
@@ -74,7 +72,7 @@ export molt_probability, calculate_mortality_probability
 export mortality_components, dominant_mortality_cause
 export shell_age_years, individuation_stage
 export NamedAggregate, total_sum
-export total_benthic_abundance, benthic_density_feedback
+export total_benthic_abundance, empirical_measured_abundance, benthic_carrying_capacity, benthic_density_feedback
 export shell_condition, min_intermolt_days, required_degree_days
 export step_aggregate_groups!, perform_development!, perform_reproduction!
 export calculate_habitat_suitability
@@ -86,7 +84,7 @@ export default_agent_observations
 export organism_disperse!, nagents, allagents, abmrng, safe_mean, safe_sum
 export default_ibm_configuration, load_ibm_configuration, save_ibm_configuration
 export TethysBio_store_root, environmental_store_dir, environmental_input_status
-export tethysbio_project_path
+export tethysbio_project_path, scotian_shelf_regional_elevation
 export assimilate_environmental_inputs, read_assimilated_environment
 export parameter_struct_defaults
 export config_field_types, config_field_type, coerce_config_value

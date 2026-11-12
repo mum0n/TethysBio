@@ -61,6 +61,7 @@ days                    = 730     # Total simulated duration in days
 # been done about it.
 grid_nx                 = 1000    # Grid width in cells
 grid_ny                 = 1000    # Grid height in cells
+unit_meters             = 1.0     # Physical length in meters of one spatial grid unit (cell)
 days_per_year           = 365.0   # Calendar length; day-of-year is taken modulo this
 temp_seasonal_phase_day = 80.0    # Day of year at peak temperature
 
@@ -103,10 +104,9 @@ initial_degree_days_max        = 300.0
 # --- Thermal regime ---
 temp_offset           = 0.0        # Baseline temperature offset (deg C)
 temp_multiplier       = 1.0        # Seasonal cycle amplitude multiplier (default: 1.0)
-temp_noise_sd         = 0.5        # Spatial thermal stochasticity (SD)
 temp_base_degreedays  = -1.5       # Extra degree-days contributed by temperature
-# --- Tethys Real Habitat Integration ---
-use_geodata           = true      # Query Tethys for real bathymetry and hydrography  # >>> snow crab override
+# --- Local Environmental Data Integration ---
+use_geodata           = true      # Use locally stored environmental fields in TethysBio/data
 domain_lon            = [-65.0, -63.0] # Longitudinal bounds [min_lon, max_lon]
 domain_lat            = [43.0, 45.0]   # Latitudinal bounds [min_lat, max_lat]
 time_range            = ["1993-01-01", "1993-12-31"] # Simulation temporal window
@@ -117,8 +117,9 @@ bathymetry_source     = "nwa_bathymetry" # Bathymetric dataset (nwa_bathymetry, 
 geodata_input_dir     = "data/inputs"
 geodata_store_dir     = "data/environmental"
 # --- Food and habitat ---
-food_max                        = 10.0    # Maximum local benthic food density
-food_replenishment_rate         = 0.1     # Daily replenishment increment per cell
+food_availability               = 1.0     # Relative food availability multiplier (1.0 = base run, 1.1 = +10%, 0.9 = -10%)
+food_max                        = 10.0    # Base local benthic food density
+food_replenishment_rate         = 0.1     # Base daily replenishment increment per cell
 # Density-dependent crowding. Total benthic abundance N is `individuated +
 # aggregate`, and the mortality feedback is 1 + (N / K)^exponent.
 #
@@ -131,8 +132,8 @@ food_replenishment_rate         = 0.1     # Daily replenishment increment per ce
 # 1.42 and rises as the population grows; at the baseline value of 12000 for a
 # 1 km^2 domain the multiplier would be 1.29 and the ceiling would sit closer to
 # the stock than to the recruitment it is meant to regulate.
-benthic_carrying_capacity       = 10000.0 # Total benthic capacity for the WHOLE
-                                             # model, not per cell
+benthic_carrying_capacity_density = 6000.0 # Carrying capacity density (individuals / km^2) for instars >= 8
+benthic_carrying_capacity       = 6000.0  # Carrying capacity for instars >= 8 (derived from density * area_km^2)
 benthic_carrying_capacity_exponent = 2.0  # Exponent in 1 + (N / K)^exponent
 half_saturation_food            = 2.0     # Half-saturation constant for intake
 assimilation_efficiency         = 0.75    # Food to energy conversion efficiency

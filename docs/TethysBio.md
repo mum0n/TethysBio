@@ -84,7 +84,7 @@ TethysBio/
 │   ├── species.jl            # Species behaviour: allometry, phenology, reproduction
 │   ├── simulation.jl         # Grid initialization, agent/model steppers, simulation runner
 │   ├── cli.jl                # CLI entry points: parsing, configuration layers, reporting
-│   ├── assimilation.jl       # Environmental store: Tethys fetch, manifest, read-back
+│   ├── assimilation.jl       # Environmental store: local dataset fetch, manifest, read-back
 │   ├── notebook_support.jl   # Pluto widget builders and notebook-facing dashboards
 │   ├── analysis.jl           # KDE, OLS/IRLS estimation, Leslie matrices, macro models
 │   ├── visualization.jl      # Diagnostic figures and video animations (CairoMakie)
@@ -119,7 +119,7 @@ TethysBio/
 | [`src/species.jl`](src/species.jl) | Implements `SpeciesParams`, `SpeciesBehaviorImpl`, empirical Hiatt increments, log-logistic maturity schedules, allometric fecundity, thermal ecdysial thresholds, and primiparous/multiparous reproductive cycles. |
 | [`src/simulation.jl`](src/simulation.jl) | Manages model instantiation (`initialize_model`), environmental field generation, scheduled time stepping (`agent_step!`, `model_step!`), and batch execution (`run_simulation`). |
 | [`src/cli.jl`](src/cli.jl) | Resolves the two-layer configuration (baseline `default.toml` plus a run overlay), parses CLI switches into typed parameters, and provides terminal reporting, snapshot telemetry, batch figure export and `julia_main` binary entry points. |
-| [`src/assimilation.jl`](src/assimilation.jl) | Assimilates the published environmental inputs (ETOPO 2022 bathymetry, WOA23/GLORYS12V1 hydrography) into an idempotent Tethys store with a manifest, and reads the store back for a run. |
+| [`src/assimilation.jl`](src/assimilation.jl) | Assimilates environmental inputs into the package-local store under data/. |
 | [`src/notebook_support.jl`](src/notebook_support.jl) | Standardized HTML/JS widget builders (domain picker, steering sliders, transport bar) and standalone CairoMakie dashboard panels for the Pluto notebook, mirroring the `gui.jl` dashboards. |
 | [`src/analysis.jl`](src/analysis.jl) | Computes kernel density estimations (KDE), iterative logistic fits (IRLS), demographic summaries, Schaefer and Delay-Difference biomass models, generalized Leslie matrices, and retrospective analyses. |
 | [`src/visualization.jl`](src/visualization.jl) | Generates executive diagnostic figures, maturity ogives, stock-recruitment plots, and video animations via CairoMakie (`Figure` output). |
@@ -276,8 +276,8 @@ julia --project=. scripts/organism_ibm.jl [OPTIONS]
 | `--grid=<nx,ny>` | Int,Int | `100,100` | 2D spatial grid dimensions. |
 | `--grid_nx=<int>`, `--grid_ny=<int>` | Integer | `100` | Grid dimensions, individually. |
 | `--seed=<int>` | Integer | `1234` | Random seed. |
-| `--temp_offset=<float>` | Float | `0.0` | Baseline bottom-temperature offset (°C); anomaly on top of the Tethys hydrographic mean. |
-| `--temp_multiplier=<float>` | Float | `1.0` | Seasonal temperature multiplier on the synthetic oscillation; scales Tethys anomalies. |
+| `--temp_offset=<float>` | Float | `0.0` | Baseline bottom-temperature offset (°C); anomaly on top of the hydrographic mean. |
+| `--temp_multiplier=<float>` | Float | `1.0` | Seasonal temperature multiplier on the synthetic oscillation; scales temperature anomalies. |
 | `--temp_base=<float>`, `--temp_amplitude=<float>` | Float | — | Legacy aliases for `--temp_offset` and `--temp_multiplier`. |
 | `--benthic_carrying_capacity=<float>` | Float | `12000.0` | Total benthic capacity for the whole model, not per cell. |
 | `--frequency_days=<float>` | Float | `365.0` | Output sampling interval. |
@@ -635,8 +635,8 @@ Upon reaching morphometric maturity, individuals undergo their terminal molt; fe
 | | `initial_age_first_stage`| `3.0` | Stage offset for initial age assignment. | `simulation.jl` |
 | | `initial_age_jitter_days`| `90.0` | Uniform random jitter applied to seeded individual age. | `simulation.jl` |
 | | `initial_degree_days_min/max`| `50.0`, `300.0`| Range of pre-ecdysial degree-days assigned to seeded agents. | `simulation.jl` |
-| **`[environment]`** | `temp_offset` | `0.0` | Additive temperature control: bottom-water mean in synthetic mode, anomaly on top of the hydrographic mean in Tethys mode (°C). Legacy `temp_base` remains an accepted alias. | `simulation.jl`, `cli.jl`, `gui.jl` |
-| | `temp_multiplier` | `1.0` | Multiplicative temperature control: seasonal oscillation amplitude in synthetic mode; scales Tethys anomalies. Legacy `temp_amplitude` remains an accepted alias. | `simulation.jl`, `cli.jl`, `gui.jl` |
+| **`[environment]`** | `temp_offset` | `0.0` | Additive temperature control: bottom-water mean in synthetic mode, anomaly on top of the hydrographic mean in local environmental mode (°C). Legacy `temp_base` remains an accepted alias. | `simulation.jl`, `cli.jl`, `gui.jl` |
+| | `temp_multiplier` | `1.0` | Multiplicative temperature control: seasonal oscillation amplitude in synthetic mode; scales anomalies. Legacy `temp_amplitude` remains an accepted alias. | `simulation.jl`, `cli.jl`, `gui.jl` |
 | | `temp_noise_sd` | `0.5` | Spatial standard deviation of environmental temperature noise. | `simulation.jl` |
 | | `temp_base_degreedays` | `-1.5` | Threshold temperature $T_0$ (°C) below which degree-days do not accrue. | `organism_dynamics.jl`, `simulation.jl` |
 | | `food_max` | `10.0` | Carrying capacity ceiling on local benthic food density. | `simulation.jl` |
@@ -646,17 +646,17 @@ Upon reaching morphometric maturity, individuals undergo their terminal molt; fe
 | | `half_saturation_food` | `2.0` | Forage concentration where intake is at 50% saturation. | `organism_dynamics.jl`, `simulation.jl` |
 | | `assimilation_efficiency`| `0.75` | Gross energetic assimilation fraction from ingested food. | `organism_dynamics.jl` |
 | | `habitat_quality_mean/sd`| `0.5`, `0.1` | Gaussian background parameters for habitat suitability index (HSI). | `simulation.jl` |
-| | `habitat_offset` | `0.0` | Additive habitat control: spatial-noise mean in synthetic mode (falling back to `habitat_quality_mean` when 0.0), added after scaling in Tethys mode. | `simulation.jl`, `gui.jl` |
-| | `habitat_multiplier` | `1.0` | Multiplicative habitat control: scales the synthetic noise SD or the Tethys HSI field before the offset is applied. | `simulation.jl`, `gui.jl` |
+| | `habitat_offset` | `0.0` | Additive habitat control: spatial-noise mean in synthetic mode (falling back to `habitat_quality_mean` when 0.0), added after scaling in local environmental mode. | `simulation.jl`, `gui.jl` |
+| | `habitat_multiplier` | `1.0` | Multiplicative habitat control: scales the synthetic noise SD or the HSI field before the offset is applied. | `simulation.jl`, `gui.jl` |
 | | `habitat_temperature_optimum`| `2.5` | Preferred temperature for spatial dispersal taxis (°C). | `simulation.jl` |
 | | `habitat_temperature_sigma`| `1.5` | Width of thermal preference curve for dispersal. | `simulation.jl` |
 | | `habitat_food_weight` | `0.5` | Relative weighting of local food availability vs temperature in taxis. | `simulation.jl` |
 | | `movement_softmax_temperature`| `0.5` | Softmax temperature regulating heading stochasticity. | `simulation.jl` |
 | | `settlement_dispersal_radius`| `2` | Cell radius for recruit settlement around parental/cohort position. | `organism_dynamics.jl` |
 | | `settlement_size_log_sd` | `0.04` | Log-normal standard deviation in carapace size at recruitment. | `organism_dynamics.jl` |
-| | `use_geodata` | `false` | Switches the run from the synthetic climatology to assimilated Tethys environmental fields. | `simulation.jl` |
-| | `domain_lon`, `domain_lat` | `[-65.0, -63.0]`, `[43.0, 45.0]` | Longitude and latitude extents (°) of the Tethys extraction domain. | `simulation.jl` |
-| | `time_range` | `["1993-01-01", "1993-12-31"]` | Calendar range of the Tethys extraction. | `simulation.jl` |
+| | `use_geodata` | `false` | Switches the run from the synthetic climatology to local environmental fields. | `simulation.jl` |
+| | `domain_lon`, `domain_lat` | `[-65.0, -63.0]`, `[43.0, 45.0]` | Longitude and latitude extents (°) of the local domain. | `simulation.jl` |
+| | `time_range` | `["1993-01-01", "1993-12-31"]` | Calendar range of the simulation window. | `simulation.jl` |
 | | `pelagic_depth` | `15.0` | Depth (m) defining the pelagic (larval) environmental layer. | `simulation.jl` |
 | | `temperature_source` | `"woa23"` | Hydrography product used for bottom and surface temperature fields. | `simulation.jl` |
 | | `temperature_month` | `0` | Month selector for the hydrography extract. | `simulation.jl` |
@@ -810,7 +810,7 @@ layer.
 | ID | Location | Finding | Evidence |
 |---|---|---|---|
 | **C1** | `src/simulation.jl:1597` | The fishery harvest path reads `model.properties`, which is not a model field. Agents.jl 7.1.0 resolves model properties out of the properties container (`core/model_abstract.jl:120`), so this is a lookup of the key `:properties` and raises `KeyError: key :properties not found`. Any run with a fishery enabled aborts on the first in-season day. | Reproduced by execution; also fails in the project's own suite at `test/test_config_parameters.jl:364`. The correct accessor `abmproperties(model)` is used at `src/simulation.jl:1626` and `:1715`. |
-| **C2** | `src/assimilation.jl:216`, `:188`, `:110-123` | `assimilate_environmental_inputs` never writes the hydrography artefact it reports as written: the `:woa23` provider returns interpolators and paths, not a `GeoDataset`, so `ds_hydro isa GeoDataset` is false. The writer, the presence check and the reader use three different names, so `read_assimilated_environment` raises "no [:hydrography]" immediately after a successful assimilation. | `Tethys/src/woa23.jl:313-325` (return contract), `:137-139` (artefact naming) vs `src/assimilation.jl:188` (writer), `:110-123` (presence check), `src/simulation.jl:770` (reader). |
+| **C2** | `src/assimilation.jl:216`, `:188`, `:110-123` | `assimilate_environmental_inputs` never writes the hydrography artefact it reports as written: the `:woa23` provider returns interpolators and paths, not a `GeoDataset`, so `ds_hydro isa GeoDataset` is false. The writer, the presence check and the reader use three different names, so `read_assimilated_environment` raises "no [:hydrography]" immediately after a successful assimilation. | `src/environmental_io.jl` (return contract), (artefact naming) vs `src/assimilation.jl:188` (writer), `:110-123` (presence check), `src/simulation.jl:770` (reader). |
 | **C3** | `src/simulation.jl:960` | `GridSpace(grid)` defaults to `periodic = true` in Agents.jl 7.1.0, so `nearby_positions` returns *wrapped* neighbours and dispersal can move an organism from one side of the domain to the other in one step — including across the no-take / fished partition, which is defined on the x index. | The model's own type parameter records it: `StandardABM{GridSpace{2, true}, ...}`. Default at `~/.julia/packages/Agents/lKaNl/src/spaces/grid_single.jl:22,35`; consumer at `src/simulation.jl:1415`. |
 
 ### 8.2 Major findings

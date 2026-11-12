@@ -190,18 +190,24 @@ end
     aoi_domain_bounds(lon::Real, lat::Real; span_meters = 1000.0)
 
 Compute geographic bounding boxes `(lon_range, lat_range)` centered at `(lon, lat)`
-for a planar span of `span_meters`.
+for a planar span of `span_meters`. When `span_meters` is a `Tuple{Real, Real}`,
+the first element specifies the longitudinal width (meters) and the second element
+specifies the latitudinal height (meters), matching box size where each grid unit is 1 meter.
 """
 function aoi_domain_bounds(
     lon::Real,
     lat::Real;
-    span_meters::Real = 1000.0
+    span_meters::Union{Real, Tuple{Real, Real}} = 1000.0
 )
-    half_m = Float64(span_meters) / 2.0
+    span_x, span_y = isa(span_meters, Tuple) ?
+        (Float64(span_meters[1]), Float64(span_meters[2])) :
+        (Float64(span_meters), Float64(span_meters))
+    half_x = span_x / 2.0
+    half_y = span_y / 2.0
     lat_deg_len = 111139.0
     lon_deg_len = max(1000.0, 111139.0 * cos(deg2rad(Float64(lat))))
-    dlat = half_m / lat_deg_len
-    dlon = half_m / lon_deg_len
+    dlat = half_y / lat_deg_len
+    dlon = half_x / lon_deg_len
     return (
         lon = [Float64(lon) - dlon, Float64(lon) + dlon],
         lat = [Float64(lat) - dlat, Float64(lat) + dlat]

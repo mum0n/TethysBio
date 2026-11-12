@@ -183,6 +183,8 @@ then silently dropped when the parameter structs are built.
 runtime_config_keys() = Set{Symbol}([
     :n_agents,
     :grid,
+    :unit,
+    :cell_size_m,
     :output_dir,
     :save_path,
     :animation_file,
@@ -299,6 +301,12 @@ function load_ibm_configuration(
     end
 
     sync_grid_dimensions!(flat; explicit = file_keys)
+
+    if haskey(flat, :unit) && !haskey(flat, :unit_meters)
+        flat[:unit_meters] = Float64(flat[:unit])
+    elseif haskey(flat, :cell_size_m) && !haskey(flat, :unit_meters)
+        flat[:unit_meters] = Float64(flat[:cell_size_m])
+    end
 
     # If n_agents was not explicitly set in the loaded file, update or initialize it
     # from the resolved initial cohort vectors.
@@ -587,6 +595,12 @@ function initialize_model(config::AbstractDict; kwargs...)
     end
     sync_grid_dimensions!(merged; explicit = override_keys)
 
+    if haskey(merged, :unit) && !haskey(merged, :unit_meters)
+        merged[:unit_meters] = Float64(merged[:unit])
+    elseif haskey(merged, :cell_size_m) && !haskey(merged, :unit_meters)
+        merged[:unit_meters] = Float64(merged[:cell_size_m])
+    end
+
     grid_dim = get(merged, :grid, (50, 50))
     if isa(grid_dim, AbstractVector)
         grid_dim = (Int(grid_dim[1]), Int(grid_dim[2]))
@@ -677,7 +691,7 @@ end
     )
 
 Construct bathymetry, bottom temperature, and habitat suitability index (HSI)
-fields using real physical datasets accessed through `Tethys`.
+fields using datasets stored locally within TethysBio.
 
 # Mathematical and Analytical Workflow
 1. Spatial coordinate mesh:
@@ -741,7 +755,10 @@ function build_geodata_environmental_fields(
         d_mat = zeros(Float64, nx, ny)
         for j in 1:ny, i in 1:nx
             val = bathy_itp(lons[i], lats[j])
-            d_mat[i, j] = isnan(val) ? 0.0 : max(0.0, -val)
+            if !isfinite(val)
+                val = scotian_shelf_regional_elevation(lons[i], lats[j])
+            end
+            d_mat[i, j] = max(0.0, -val)
         end
         d_mat
     end
@@ -749,114 +766,91 @@ function build_geodata_environmental_fields(
     # 2. Bottom and upper water column (pelagic) temperature from hydrography
     pelagic_z = -abs(Float64(env_params.pelagic_depth))
     store_dir = TethysBio.environmental_store_dir(env_params)
-
-    hydro_path = TethysBio.fetch_local_hydrography!(
-        env_params, store_dir; verbose = true
-    )
-    hydro_ds = TethysBio.load_environmental_dataset(
-        hydro_path; backend = endswith(hydro_path, ".nc") ? :ncdatasets : nothing
-    )
-
-    h_lons_raw, _ = TethysBio.environmental_axis(hydro_ds, :lon)
-    h_lats_raw, _ = TethysBio.environmental_axis(hydro_ds, :lat)
-    h_deps_raw, _ = TethysBio.environmental_axis(hydro_ds, :depth)
-
-    # Reconcile depth coordinate to negative-up if positive-down
-    z_coords = if !isempty(h_deps_raw) && minimum(h_deps_raw) > -0.5 * maximum(abs, h_deps_raw)
-        -Float64.(h_deps_raw)
-    else
-        Float64.(h_deps_raw)
-    end
-
-    p_lon = issorted(h_lons_raw) ? (1:length(h_lons_raw)) : sortperm(h_lons_raw)
-    p_lat = issorted(h_lats_raw) ? (1:length(h_lats_raw)) : sortperm(h_lats_raw)
-    p_z = issorted(z_coords) ? (1:length(z_coords)) : sortperm(z_coords)
-
-    h_lons = Float64.(h_lons_raw[p_lon])
-    h_lats = Float64.(h_lats_raw[p_lat])
-    h_z = Float64.(z_coords[p_z])
-
-    t_var_name = haskey(hydro_ds.variables, "thetao") ? "thetao" :
-                 (haskey(hydro_ds.variables, "t_an") ? "t_an" : "temperature")
-    t_data_raw = hydro_ds.variables[t_var_name].data
-
-    has_time = ndims(t_data_raw) == 4
-    nx_h, ny_h = length(h_lons), length(h_lats)
-
-    # Helper function to fill land cells with nearest valid marine cell
-    function fill_land_nearest!(field_2d::Matrix{Float64})
-        if !any(isnan, field_2d)
-            return field_2d
-        end
-        valid_indices = CartesianIndex{2}[]
-        valid_values = Float64[]
-        for ci in CartesianIndices(field_2d)
-            val = field_2d[ci]
-            if !isnan(val)
-                push!(valid_indices, ci)
-                push!(valid_values, val)
-            end
-        end
-        if isempty(valid_values)
-            field_2d .= 2.0
-            return field_2d
-        end
-        for ci in CartesianIndices(field_2d)
-            if isnan(field_2d[ci])
-                best_d2 = Inf
-                best_v = valid_values[1]
-                for k in eachindex(valid_indices)
-                    d2 = (ci[1] - valid_indices[k][1])^2 + (ci[2] - valid_indices[k][2])^2
-                    if d2 < best_d2
-                        best_d2 = d2
-                        best_v = valid_values[k]
-                    end
-                end
-                field_2d[ci] = best_v
-            end
-        end
-        return field_2d
-    end
+    hydro_path = TethysBio.local_hydrography_path(env_params, store_dir)
 
     monthly_bottom = Vector{Matrix{Float64}}(undef, 12)
     monthly_surface = Vector{Matrix{Float64}}(undef, 12)
 
-    for m in 1:12
-        raw_slice = has_time ? t_data_raw[:, :, :, m] : t_data_raw
-        if size(raw_slice, 1) == length(h_lats_raw) && size(raw_slice, 2) == length(h_lons_raw)
-            raw_slice = permutedims(raw_slice, (2, 1, 3))
-        end
-        slice_sorted = Float64.(raw_slice[p_lon, p_lat, p_z])
+    has_hydro_data = false
+    if hydro_path !== nothing && (isfile(hydro_path) || isdir(hydro_path))
+        try
+            hydro_ds = TethysBio.load_environmental_dataset(hydro_path)
+            if hasproperty(hydro_ds, :variables)
+                h_lons_raw, _ = TethysBio.environmental_axis(hydro_ds, :lon)
+                h_lats_raw, _ = TethysBio.environmental_axis(hydro_ds, :lat)
+                h_deps_raw, _ = TethysBio.environmental_axis(hydro_ds, :depth)
 
-        b_2d = fill(NaN, nx_h, ny_h)
-        s_2d = fill(NaN, nx_h, ny_h)
+                z_coords = if !isempty(h_deps_raw) && minimum(h_deps_raw) > -0.5 * maximum(abs, h_deps_raw)
+                    -Float64.(h_deps_raw)
+                else
+                    Float64.(h_deps_raw)
+                end
 
-        for j in 1:ny_h, i in 1:nx_h
-            col = slice_sorted[i, j, :]
-            valid_k = findall(!isnan, col)
-            if !isempty(valid_k)
-                # In slice_sorted, z ascends from deep seafloor to surface
-                b_2d[i, j] = col[first(valid_k)]
-                s_2d[i, j] = col[last(valid_k)]
+                p_lon = issorted(h_lons_raw) ? (1:length(h_lons_raw)) : sortperm(h_lons_raw)
+                p_lat = issorted(h_lats_raw) ? (1:length(h_lats_raw)) : sortperm(h_lats_raw)
+                p_z = issorted(z_coords) ? (1:length(z_coords)) : sortperm(z_coords)
+
+                h_lons = Float64.(h_lons_raw[p_lon])
+                h_lats = Float64.(h_lats_raw[p_lat])
+                h_z = Float64.(z_coords[p_z])
+
+                t_var_name = haskey(hydro_ds.variables, "thetao") ? "thetao" :
+                             (haskey(hydro_ds.variables, "t_an") ? "t_an" : "temperature")
+                t_data_raw = hydro_ds.variables[t_var_name].data
+                has_time = ndims(t_data_raw) == 4
+                nx_h, ny_h = length(h_lons), length(h_lats)
+
+                for m in 1:12
+                    raw_slice = has_time ? t_data_raw[:, :, :, m] : t_data_raw
+                    if size(raw_slice, 1) == length(h_lats_raw) && size(raw_slice, 2) == length(h_lons_raw)
+                        raw_slice = permutedims(raw_slice, (2, 1, 3))
+                    end
+                    slice_sorted = Float64.(raw_slice[p_lon, p_lat, p_z])
+                    b_2d = fill(NaN, nx_h, ny_h)
+                    s_2d = fill(NaN, nx_h, ny_h)
+                    for j in 1:ny_h, i in 1:nx_h
+                        col = slice_sorted[i, j, :]
+                        valid_k = findall(!isnan, col)
+                        if !isempty(valid_k)
+                            b_2d[i, j] = col[first(valid_k)]
+                            s_2d[i, j] = col[last(valid_k)]
+                        end
+                    end
+                    fill_land_nearest!(b_2d)
+                    fill_land_nearest!(s_2d)
+                    itp_b = LinearInterpolation((h_lons, h_lats), b_2d,
+                                                extrapolation_bc = Interpolations.Flat())
+                    itp_s = LinearInterpolation((h_lons, h_lats), s_2d,
+                                                extrapolation_bc = Interpolations.Flat())
+                    b_mat = zeros(Float64, nx, ny)
+                    s_mat = zeros(Float64, nx, ny)
+                    for j in 1:ny, i in 1:nx
+                        b_mat[i, j] = itp_b(lons[i], lats[j])
+                        s_mat[i, j] = itp_s(lons[i], lats[j])
+                    end
+                    monthly_bottom[m] = b_mat
+                    monthly_surface[m] = s_mat
+                end
+                has_hydro_data = true
             end
+        catch
+            has_hydro_data = false
         end
+    end
 
-        fill_land_nearest!(b_2d)
-        fill_land_nearest!(s_2d)
-
-        itp_b = LinearInterpolation((h_lons, h_lats), b_2d,
-                                    extrapolation_bc = Interpolations.Flat())
-        itp_s = LinearInterpolation((h_lons, h_lats), s_2d,
-                                    extrapolation_bc = Interpolations.Flat())
-
-        b_mat = zeros(Float64, nx, ny)
-        s_mat = zeros(Float64, nx, ny)
-        for j in 1:ny, i in 1:nx
-            b_mat[i, j] = itp_b(lons[i], lats[j])
-            s_mat[i, j] = itp_s(lons[i], lats[j])
+    if !has_hydro_data
+        for m in 1:12
+            month_offset = sin(2.0 * π * (m - 3.0) / 12.0)
+            b_mat = zeros(Float64, nx, ny)
+            s_mat = zeros(Float64, nx, ny)
+            for j in 1:ny, i in 1:nx
+                b_val = DashboardShared.aoi_bottom_temperature(depth_field[i, j], lats[j]) + month_offset * 1.5
+                b_mat[i, j] = b_val
+                s_mat[i, j] = max(0.0, b_val + 4.0 + month_offset * 3.0)
+            end
+            monthly_bottom[m] = b_mat
+            monthly_surface[m] = s_mat
         end
-        monthly_bottom[m] = b_mat
-        monthly_surface[m] = s_mat
     end
 
     # Baseline/initial temperature field
@@ -994,7 +988,7 @@ function initialize_model(;
     end
 
     initial_food = if food_map === nothing
-        fill(params.environment.food_max / 2.0, grid)
+        fill((params.environment.food_max * params.environment.food_availability) / 2.0, grid)
     else
         copy(food_map)
     end
@@ -1331,12 +1325,12 @@ function initialize_model(;
     # multiplier is 257 and every hazard is a certainty on day one. That looks
     # like an extinction the model never modelled, so it is reported here rather
     # than discovered in the results.
-    k_cap = params.environment.benthic_carrying_capacity
-    seeded_stock = total_benthic_abundance(model)
+    k_cap = benthic_carrying_capacity(model)
+    seeded_stock = empirical_measured_abundance(model)
     if k_cap > 0.0 && seeded_stock > k_cap
         multiplier = 1.0 +
                      (seeded_stock / k_cap)^params.environment.benthic_carrying_capacity_exponent
-        @warn "seeded benthic stock already exceeds the carrying capacity" stock =
+        @warn "seeded benthic stock (instars >= 8) already exceeds the carrying capacity" stock =
             round(seeded_stock; digits = 1) capacity = k_cap ratio = round(
             seeded_stock / k_cap;
             digits = 2,
@@ -1711,13 +1705,9 @@ function model_step!(model)
     env = model.params.environment
     t_offset = env.temp_offset
     t_mult = env.temp_multiplier
-    t_sd = env.temp_noise_sd
 
-    # The seasonal target is spatially uniform; the field's only structure is the
-    # white noise. When use_geodata == false, t_offset acts as base mean and t_mult as amplitude.
-    # When use_geodata == true, t_offset is an anomaly added on top of the hydrographic mean
-    # (default 0.0); setting temp_base (an alias of temp_offset) to a non-zero value therefore
-    # biases the geodata temperature by that amount (m5).
+    # Deterministic thermal regime: offset and seasonal amplitude multipliers.
+    # Stochastic thermal noise is removed in favor of deterministic drivers.
     seasonal_target = t_offset + t_mult * sinusoidal_factor
     temperature = model.temperature_field
     mprops = abmproperties(model)
@@ -1744,18 +1734,10 @@ function model_step!(model)
                  model.mean_surface : s1
 
         surface_temp = model.surface_temperature_field
-        if t_sd > 0.0
-            randn!(abmrng(model), temperature)
-            @. surface_temp = (((1.0 - frac) * s1 + frac * s2) - mean_s) * t_mult +
-                              mean_s + t_offset + t_sd * temperature
-            @. temperature = (((1.0 - frac) * b1 + frac * b2) - mean_b) * t_mult +
-                             mean_b + t_offset + t_sd * temperature
-        else
-            @. surface_temp = (((1.0 - frac) * s1 + frac * s2) - mean_s) * t_mult +
-                              mean_s + t_offset
-            @. temperature = (((1.0 - frac) * b1 + frac * b2) - mean_b) * t_mult +
-                             mean_b + t_offset
-        end
+        @. surface_temp = (((1.0 - frac) * s1 + frac * s2) - mean_s) * t_mult +
+                          mean_s + t_offset
+        @. temperature = (((1.0 - frac) * b1 + frac * b2) - mean_b) * t_mult +
+                         mean_b + t_offset
         if haskey(mprops, :depth_field)
             raw_hsi = calculate_habitat_suitability.(temperature, model.depth_field)
             @. model.habitat_quality_field = clamp(
@@ -1767,16 +1749,8 @@ function model_step!(model)
         base_field = model.baseline_temperature_field
         base_surf = get(mprops, :baseline_surface_temperature_field, base_field)
         surface_temp = get(mprops, :surface_temperature_field, temperature)
-        if t_sd > 0.0
-            randn!(abmrng(model), temperature)
-            @. surface_temp = base_surf + t_mult * sinusoidal_factor + t_offset +
-                              t_sd * temperature
-            @. temperature = base_field + t_mult * sinusoidal_factor + t_offset +
-                              t_sd * temperature
-        else
-            @. surface_temp = base_surf + t_mult * sinusoidal_factor + t_offset
-            @. temperature = base_field + t_mult * sinusoidal_factor + t_offset
-        end
+        @. surface_temp = base_surf + t_mult * sinusoidal_factor + t_offset
+        @. temperature = base_field + t_mult * sinusoidal_factor + t_offset
         if haskey(mprops, :depth_field)
             raw_hsi = calculate_habitat_suitability.(temperature, model.depth_field)
             @. model.habitat_quality_field = clamp(
@@ -1786,14 +1760,8 @@ function model_step!(model)
         end
     else
         surface_temp = get(mprops, :surface_temperature_field, temperature)
-        if t_sd > 0.0
-            randn!(abmrng(model), temperature)
-            @. surface_temp = seasonal_target + t_sd * temperature
-            @. temperature = seasonal_target + t_sd * temperature
-        else
-            fill!(surface_temp, seasonal_target)
-            fill!(temperature, seasonal_target)
-        end
+        fill!(surface_temp, seasonal_target)
+        fill!(temperature, seasonal_target)
     end
 
     # Published for the agent phase, which needs the same day of year for every
@@ -1801,10 +1769,10 @@ function model_step!(model)
     model.day_of_year = day_of_year
     abmproperties(model)[:day_of_year_time] = model.current_time
 
-    f_max = env.food_max
-    f_rate = env.food_replenishment_rate
-    # `F += r * (f_max - F) * dt` written as the affine map it is: one multiply
-    # and one add per cell rather than a subtract, two multiplies and an add.
+    # Food dynamics scaled by unified food_availability multiplier
+    food_avail = env.food_availability
+    f_max = env.food_max * food_avail
+    f_rate = env.food_replenishment_rate * food_avail
     food_decay = 1.0 - f_rate * dt
     food_gain = f_rate * f_max * dt
     @. model.food_availability_field = max(0.0, food_decay * model.food_availability_field + food_gain)
