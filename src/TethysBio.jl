@@ -13,6 +13,7 @@ using Random
 using Statistics
 using Parquet2
 using Interpolations
+using Zarr
 
 const _PROJECT_ROOT = normpath(joinpath(@__DIR__, ".."))
 const _DATA_ROOT = joinpath(_PROJECT_ROOT, "data")

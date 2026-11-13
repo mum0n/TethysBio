@@ -384,10 +384,16 @@ function setup_spatial_panel!(
         Point2f.(xs, ys)
     end
 
+    color_obs = if colors isa Observable
+        lift(c -> [parse(RGBf, s) for s in c], colors)
+    else
+        colors
+    end
+
     scatter!(
         ax, pts;
         markersize = sizes,
-        color = colors,
+        color = color_obs,
         strokewidth = 0.5,
         strokecolor = RGBAf(0.05f0, 0.05f0, 0.05f0, 0.85f0)
     )
@@ -425,12 +431,17 @@ and early aggregate cohort stages 50/50 and individuated stages by sex.
 """
 function setup_stages_panel!(ax, half_w, base_agg, base_agent, n_male_st, n_fem_st,
                              egg_y, agg_y, male_y, female_y)
-    stem!(ax, [1.0 - half_w], egg_y; color = :royalblue, label = "Males")
-    stem!(ax, [1.0 + half_w], egg_y; color = :crimson, label = "Females")
-    stem!(ax, base_agg .- half_w, agg_y; color = :royalblue, label = nothing)
-    stem!(ax, base_agg .+ half_w, agg_y; color = :crimson, label = nothing)
-    stem!(ax, base_agent[1:n_male_st] .- half_w, male_y; color = :royalblue, label = nothing)
-    stem!(ax, base_agent[1:n_fem_st] .+ half_w, female_y; color = :crimson, label = nothing)
+    # Lines and dots for each stage, with male/female pairs for every instar.
+    scatter!(ax, [1.0 - half_w], egg_y; color = :royalblue, label = "Males", markersize = 8)
+    scatter!(ax, [1.0 + half_w], egg_y; color = :crimson, label = "Females", markersize = 8)
+    lines!(ax, base_agg .- half_w, agg_y; color = :royalblue, linewidth = 1.5)
+    scatter!(ax, base_agg .- half_w, agg_y; color = :royalblue, markersize = 8)
+    lines!(ax, base_agg .+ half_w, agg_y; color = :crimson, linewidth = 1.5)
+    scatter!(ax, base_agg .+ half_w, agg_y; color = :crimson, markersize = 8)
+    lines!(ax, base_agent[1:n_male_st] .- half_w, male_y; color = :royalblue, linewidth = 1.5)
+    scatter!(ax, base_agent[1:n_male_st] .- half_w, male_y; color = :royalblue, markersize = 8)
+    lines!(ax, base_agent[1:n_fem_st] .+ half_w, female_y; color = :crimson, linewidth = 1.5)
+    scatter!(ax, base_agent[1:n_fem_st] .+ half_w, female_y; color = :crimson, markersize = 8)
     return axislegend(
         ax, position = :rt, labelsize = 9, framevisible = true,
         framecolor = (:gray75, 0.6), backgroundcolor = (:white, 0.88),
@@ -1901,7 +1912,7 @@ function setup_criteria_panel!(ax, criteria_text_obs)
         space = :relative,
         align = (:left, :top),
         fontsize = 11,
-        font = "monospace",
+        font = "TeX Gyre Heros Makie",
         color = :black
     )
     return nothing
@@ -1930,7 +1941,7 @@ function setup_annual_table_panel!(ax, table_text_obs)
         space = :relative,
         align = (:left, :top),
         fontsize = 10,
-        font = "monospace",
+        font = "TeX Gyre Heros Makie",
         color = :black
     )
     return nothing
@@ -2808,7 +2819,7 @@ function launch_organism_gui(config::Dict{Symbol, Any}; display_window::Bool = t
         ctrl_w_tab1 = 280.0
         gap_ctrl_map = 24.0
         right_x = full_x + ctrl_w_tab1 + gap_ctrl_map
-        right_w = max(380.0, Float64(fig_w) - right_x - 35.0)
+        right_w = max(190.0, (Float64(fig_w) - right_x - 35.0) * 0.5)
 
         gap_map_cycle = 24.0
         map_h = floor((avail_h - gap_map_cycle) * 0.58)
@@ -2842,8 +2853,8 @@ function launch_organism_gui(config::Dict{Symbol, Any}; display_window::Bool = t
         # Tab 3: Demographics & Growth (2 columns, reduced to ~75% size)
         col_w_half = max(150.0, floor((full_w - gap_x) / 2.0))
         row_h_half = max(120.0, floor((avail_h - gap_y) / 2.0))
-        col_w_tab3 = floor(col_w_half * 0.75)
-        row_h_tab3 = floor(row_h_half * 0.75)
+        col_w_tab3 = floor(col_w_half)
+        row_h_tab3 = floor(row_h_half)
         col2_x_tab3 = full_x + col_w_tab3 + gap_x
         row1_y_tab3 = viewport_y + row_h_tab3 + gap_y
         row2_y_tab3 = viewport_y
@@ -3230,7 +3241,7 @@ function launch_organism_gui(config::Dict{Symbol, Any}; display_window::Bool = t
     if aoi_bathymetry !== nothing
         heatmap!(
             ax_aoi_map, aoi_bathymetry.lons, aoi_bathymetry.lats,
-            aoi_bathymetry.depths; colormap = :deep,
+            permutedims(aoi_bathymetry.depths); colormap = :deep,
             colorrange = (0.0, 450.0)
         )
         contour!(

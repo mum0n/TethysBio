@@ -10,6 +10,19 @@ analytical fallback interpolators for the Northwest Atlantic and Scotian Shelf.
 """
 
 """
+    ZarrHydroDataset
+
+Lightweight adapter exposing a Zarr hydrography store through the same interface
+the simulation expects (`variables` dict with `.data`, plus `environmental_axis`).
+"""
+struct ZarrHydroDataset
+    variables::Dict{String, Any}
+    lon::Vector{Float64}
+    lat::Vector{Float64}
+    depth::Vector{Float64}
+end
+
+"""
     load_environmental_dataset(path::AbstractString; backend = nothing)
 
 Load an environmental dataset from package-local storage.
@@ -22,6 +35,105 @@ Supports Parquet (.parquet), JLD2 (.jld2), and directory stores.
 # Returns
 NamedTuple or DataFrame containing coordinate axes and variable matrices.
 """
+function _zarr_array(store, names...)
+    arrays = store.arrays
+    for n in names
+        if haskey(arrays, n)
+            return store[n]
+        end
+    end
+    # Case-insensitive / alias fallback
+    lowered = Dict(lowercase(k) => k for k in keys(arrays))
+    for n in names
+        lk = lowercase(n)
+        if haskey(lowered, lk)
+            return store[lowered[lk]]
+        end
+    end
+    return nothing
+end
+
+function _load_zarr_dataset(clean_path::String)
+    g = Zarr.zopen(clean_path, "r")
+
+    lon_arr = _zarr_array(g, "lon", "longitude", "x", "LON", "LONGITUDE")
+    lat_arr = _zarr_array(g, "lat", "latitude", "y", "LAT", "LATITUDE")
+    if lon_arr === nothing || lat_arr === nothing
+        throw(ArgumentError("Zarr store has no lon/lat arrays: $(clean_path)"))
+    end
+    lons = Float64.(collect(lon_arr[:]))
+    lats = Float64.(collect(lat_arr[:]))
+
+    # Hydrography store: has a 4D temperature variable
+    temp_name = nothing
+    for cand in ("thetao", "t_an", "temperature", "temp", "t", "s_an")
+        if haskey(g.arrays, cand)
+            temp_name = cand
+            break
+        end
+    end
+    # Also detect any 4D array that is not a coordinate
+    coord_names = Set(["lon", "lat", "latitude", "longitude", "depth", "depths",
+                      "z", "time", "x", "y"])
+    if temp_name === nothing
+        for (k, v) in g.arrays
+            if !(lowercase(k) in coord_names) && ndims(v) >= 3
+                temp_name = k
+                break
+            end
+        end
+    end
+
+    depth_arr = _zarr_array(g, "depth", "depths", "z", "DEPTH", "Z")
+
+    if temp_name !== nothing && depth_arr !== nothing
+        depth_vals = Float64.(collect(depth_arr[:]))
+        t_data = collect(g[temp_name])
+        vars = Dict{String, Any}(temp_name => (data = t_data,))
+        return ZarrHydroDataset(vars, lons, lats, depth_vals)
+    end
+
+    # Bathymetry store: has a 2D elevation/z variable
+    z_name = nothing
+    for cand in ("z", "elevation", "depth", "bat", "bathymetry", "topo")
+        if haskey(g.arrays, cand)
+            z_name = cand
+            break
+        end
+    end
+    if z_name === nothing
+        # Pick the first non-coordinate 2D array
+        for (k, v) in g.arrays
+            if !(lowercase(k) in coord_names) && ndims(v) == 2
+                z_name = k
+                break
+            end
+        end
+    end
+    if z_name === nothing
+        throw(ArgumentError("Zarr store has no bathymetry array: $(clean_path)"))
+    end
+    z_arr = g[z_name]
+    z_data = z_arr[:,:]
+    dims = String.(get(z_arr.attrs, "_ARRAY_DIMENSIONS", String[]))
+    pos_lon = findfirst(x -> lowercase(x) in ("lon", "longitude", "x"), dims)
+    pos_lat = findfirst(x -> lowercase(x) in ("lat", "latitude", "y"), dims)
+    pos_lon === nothing && (pos_lon = 1)
+    pos_lat === nothing && (pos_lat = 2)
+
+    rows_lon = Float64[]
+    rows_lat = Float64[]
+    rows_elev = Float64[]
+    for I in CartesianIndices(z_data)
+        i_lon = I[pos_lon]
+        i_lat = I[pos_lat]
+        push!(rows_lon, lons[i_lon])
+        push!(rows_lat, lats[i_lat])
+        push!(rows_elev, Float64(z_data[I]))
+    end
+    return DataFrame(longitude = rows_lon, latitude = rows_lat, elevation = rows_elev)
+end
+
 function load_environmental_dataset(path::AbstractString; backend = nothing)
     clean_path = String(path)
     if endswith(clean_path, ".parquet")
@@ -42,6 +154,15 @@ function load_environmental_dataset(path::AbstractString; backend = nothing)
         if isfile(pq_sibling)
             return load_environmental_dataset(pq_sibling)
         end
+        # Zarr store
+        if isfile(joinpath(clean_path, ".zgroup")) || isfile(joinpath(clean_path, ".zattrs")) ||
+           isfile(joinpath(clean_path, ".zarray"))
+            return _load_zarr_dataset(clean_path)
+        end
+        # Heuristic: directory contains .zarray anywhere
+        if any(f -> endswith(f, ".zarray"), readdir(clean_path))
+            return _load_zarr_dataset(clean_path)
+        end
     end
     throw(ArgumentError("Unsupported or missing environmental dataset: $(clean_path)"))
 end
@@ -51,6 +172,17 @@ end
 
 Extract a 1D coordinate axis vector from an environmental dataset.
 """
+function environmental_axis(dataset::ZarrHydroDataset, name::Symbol)
+    if name === :lon || name === :longitude
+        return (dataset.lon, :lon)
+    elseif name === :lat || name === :latitude
+        return (dataset.lat, :lat)
+    elseif name === :depth || name === :depths
+        return (dataset.depth, :depth)
+    end
+    throw(ArgumentError("Coordinate axis $(name) not found in environmental dataset."))
+end
+
 function environmental_axis(dataset, name::Symbol)
     if dataset isa DataFrame
         s_name = String(name)
